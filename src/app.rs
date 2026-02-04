@@ -173,8 +173,7 @@ impl App {
 
                         // Start watching this file
                         if let Err(e) = self.watcher.watch(session.log_path.clone()) {
-                            self.error_message =
-                                Some(format!("Failed to watch file: {}", e));
+                            self.error_message = Some(format!("Failed to watch file: {}", e));
                         }
                     }
                     Err(e) => {
@@ -199,26 +198,26 @@ impl App {
 
                         // Check if last existing entry is a ToolCall that needs its result
                         // merged from the first new entry
-                        if let Some(last) = self.conversation.last_mut() {
-                            if let DisplayEntry::ToolCall { id, result, .. } = last {
-                                if result.is_none() {
-                                    if let Some(DisplayEntry::ToolResult {
-                                        tool_use_id,
-                                        content,
-                                        is_error,
-                                        ..
-                                    }) = merged_new.first()
-                                    {
-                                        if tool_use_id == id {
-                                            // Merge the result into the existing ToolCall
-                                            *result = Some(crate::logs::ToolCallResult {
-                                                content: content.clone(),
-                                                is_error: *is_error,
-                                            });
-                                            // Skip the first entry since we merged it
-                                            self.conversation.extend(merged_new.into_iter().skip(1));
-                                            return;
-                                        }
+                        if let Some(DisplayEntry::ToolCall { id, result, .. }) =
+                            self.conversation.last_mut()
+                        {
+                            if result.is_none() {
+                                if let Some(DisplayEntry::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error,
+                                    ..
+                                }) = merged_new.first()
+                                {
+                                    if tool_use_id == id {
+                                        // Merge the result into the existing ToolCall
+                                        *result = Some(crate::logs::ToolCallResult {
+                                            content: content.clone(),
+                                            is_error: *is_error,
+                                        });
+                                        // Skip the first entry since we merged it
+                                        self.conversation.extend(merged_new.into_iter().skip(1));
+                                        return;
                                     }
                                 }
                             }

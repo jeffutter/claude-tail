@@ -23,7 +23,9 @@ impl LogWatcher {
 
         let mut debouncer = new_debouncer(Duration::from_millis(100), tx)?;
 
-        debouncer.watcher().watch(&path, RecursiveMode::NonRecursive)?;
+        debouncer
+            .watcher()
+            .watch(&path, RecursiveMode::NonRecursive)?;
 
         // Spawn a thread to convert sync events to async
         let watch_path = path.clone();
@@ -32,10 +34,10 @@ impl LogWatcher {
                 match events {
                     Ok(events) => {
                         for event in events {
-                            if event.kind == DebouncedEventKind::Any {
-                                if event.path == watch_path || event.path.starts_with(&watch_path) {
-                                    let _ = event_tx.send(WatcherEvent::FileModified(event.path));
-                                }
+                            if event.kind == DebouncedEventKind::Any
+                                && (event.path == watch_path || event.path.starts_with(&watch_path))
+                            {
+                                let _ = event_tx.send(WatcherEvent::FileModified(event.path));
                             }
                         }
                     }

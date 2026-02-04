@@ -2,7 +2,9 @@ use anyhow::Result;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use super::types::{ContentBlock, ContentValue, DisplayEntry, LogEntry, ToolCallResult, ToolResultContent};
+use super::types::{
+    ContentBlock, ContentValue, DisplayEntry, LogEntry, ToolCallResult, ToolResultContent,
+};
 
 pub fn parse_jsonl_file(path: &Path) -> Result<Vec<DisplayEntry>> {
     let file = std::fs::File::open(path)?;
@@ -223,9 +225,7 @@ fn parse_assistant_message(
                 timestamp,
             }]
         }
-        Some(ContentValue::Blocks(blocks)) => {
-            parse_content_blocks_vec(blocks, timestamp)
-        }
+        Some(ContentValue::Blocks(blocks)) => parse_content_blocks_vec(blocks, timestamp),
         None => Vec::new(),
     }
 }
@@ -398,10 +398,22 @@ pub fn merge_tool_results(entries: Vec<DisplayEntry>) -> Vec<DisplayEntry> {
         }
 
         match entry {
-            DisplayEntry::ToolCall { id, name, input, timestamp, result: _ } => {
+            DisplayEntry::ToolCall {
+                id,
+                name,
+                input,
+                timestamp,
+                result: _,
+            } => {
                 // Look ahead for a matching ToolResult
                 let merged_result = entries.get(i + 1).and_then(|next| {
-                    if let DisplayEntry::ToolResult { tool_use_id, content, is_error, .. } = next {
+                    if let DisplayEntry::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                        ..
+                    } = next
+                    {
                         if tool_use_id == id {
                             skip_next = true;
                             Some(ToolCallResult {

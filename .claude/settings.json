@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo fmt"
+          },
+          {
+            "type": "command",
+            "command": "cargo clippy --all-targets --all-features --workspace --fix --allow-dirty"
+          }
+        ]
+      }
+    ]
+  }
+}
+

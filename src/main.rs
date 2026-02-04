@@ -169,7 +169,12 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // Draw projects pane
     let projects_focused = app.focus == app::FocusPane::Projects;
     let projects_collapsed = app.focus != app::FocusPane::Projects;
-    let project_list = ProjectList::new(&app.projects, projects_focused, projects_collapsed, &app.theme);
+    let project_list = ProjectList::new(
+        &app.projects,
+        projects_focused,
+        projects_collapsed,
+        &app.theme,
+    );
     StatefulWidget::render(
         project_list,
         layout.projects,
@@ -180,7 +185,12 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // Draw sessions pane
     let sessions_focused = app.focus == app::FocusPane::Sessions;
     let sessions_collapsed = app.focus != app::FocusPane::Sessions;
-    let session_list = SessionList::new(&app.sessions, sessions_focused, sessions_collapsed, &app.theme);
+    let session_list = SessionList::new(
+        &app.sessions,
+        sessions_focused,
+        sessions_collapsed,
+        &app.theme,
+    );
     StatefulWidget::render(
         session_list,
         layout.sessions,

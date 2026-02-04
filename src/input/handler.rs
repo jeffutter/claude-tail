@@ -121,7 +121,8 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.conversation_state.scroll_down(viewport_height / 2, viewport_height);
+            app.conversation_state
+                .scroll_down(viewport_height / 2, viewport_height);
             Action::Redraw
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -129,7 +130,8 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
         KeyCode::PageDown => {
-            app.conversation_state.scroll_down(viewport_height, viewport_height);
+            app.conversation_state
+                .scroll_down(viewport_height, viewport_height);
             Action::Redraw
         }
         KeyCode::PageUp => {

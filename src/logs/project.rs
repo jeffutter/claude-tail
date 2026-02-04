@@ -18,7 +18,8 @@ impl Project {
         let path_str = self.original_path.to_string_lossy();
 
         let home = dirs::home_dir();
-        let home_str = home.as_ref()
+        let home_str = home
+            .as_ref()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_default();
 
@@ -26,7 +27,9 @@ impl Project {
         let relative_path = if !home_str.is_empty() && path_str.starts_with(&home_str) {
             // Direct match - path starts with home directory
             format!("~{}", &path_str[home_str.len()..])
-        } else if !home_str.is_empty() && (path_str.starts_with("/Users/") || path_str.starts_with("/home/")) {
+        } else if !home_str.is_empty()
+            && (path_str.starts_with("/Users/") || path_str.starts_with("/home/"))
+        {
             // Home directory might be split due to encoding (e.g., jeffery.utter -> jeffery/utter)
             // Count components in actual home, then skip that many "encoded" components
             // accounting for dots that became extra path separators
@@ -39,7 +42,10 @@ impl Project {
 
             // Skip that many components from the path
             if path_parts.len() > home_encoded_components {
-                let remaining: Vec<&str> = path_parts.into_iter().skip(home_encoded_components).collect();
+                let remaining: Vec<&str> = path_parts
+                    .into_iter()
+                    .skip(home_encoded_components)
+                    .collect();
                 format!("~/{}", remaining.join("/"))
             } else {
                 "~".to_string()
@@ -63,7 +69,10 @@ impl Project {
                     part.to_string()
                 } else {
                     // Abbreviate intermediate components
-                    part.chars().next().map(|c| c.to_string()).unwrap_or_default()
+                    part.chars()
+                        .next()
+                        .map(|c| c.to_string())
+                        .unwrap_or_default()
                 }
             })
             .collect();
@@ -103,7 +112,8 @@ pub fn get_claude_projects_dir() -> Option<PathBuf> {
 }
 
 pub fn discover_projects() -> Result<Vec<Project>> {
-    let projects_dir = get_claude_projects_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let projects_dir = get_claude_projects_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
 
     if !projects_dir.exists() {
         return Ok(Vec::new());
@@ -124,12 +134,11 @@ pub fn discover_projects() -> Result<Vec<Project>> {
 
             // Try to get the original path from sessions-index.json
             let sessions_index_path = path.join("sessions-index.json");
-            let original_path = load_original_path(&sessions_index_path)
-                .unwrap_or_else(|| {
-                    // Fallback to decoding if sessions-index.json doesn't have it
-                    let (_, decoded) = decode_project_path(&encoded_path);
-                    decoded
-                });
+            let original_path = load_original_path(&sessions_index_path).unwrap_or_else(|| {
+                // Fallback to decoding if sessions-index.json doesn't have it
+                let (_, decoded) = decode_project_path(&encoded_path);
+                decoded
+            });
 
             let name = original_path
                 .file_name()
@@ -194,7 +203,9 @@ pub fn discover_sessions(project: &Project) -> Result<Vec<Session>> {
                 .to_string();
 
             let metadata = entry.metadata()?;
-            let last_modified = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let last_modified = metadata
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
             let summary = summaries.get(&session_id).cloned().flatten();
 

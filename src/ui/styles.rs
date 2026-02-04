@@ -29,7 +29,9 @@ impl Default for Theme {
             border: Style::default().fg(Color::DarkGray),
             border_focused: Style::default().fg(Color::Cyan),
             title: Style::default().fg(Color::White),
-            title_focused: Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            title_focused: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
             selected: Style::default()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),

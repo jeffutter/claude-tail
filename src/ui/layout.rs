@@ -33,9 +33,9 @@ impl AppLayout {
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),  // Header
-                Constraint::Min(10),    // Main content
-                Constraint::Length(1),  // Status bar
+                Constraint::Length(1), // Header
+                Constraint::Min(10),   // Main content
+                Constraint::Length(1), // Status bar
             ])
             .split(area);
 

@@ -2,7 +2,10 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget},
+    widgets::{
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget,
+        Widget,
+    },
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -62,7 +65,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_inline_result(&self, lines: &mut Vec<Line<'a>>, result: &ToolCallResult, content_width: usize) {
+    fn render_inline_result(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        result: &ToolCallResult,
+        content_width: usize,
+    ) {
         if !self.expand_tools {
             // Show collapsed indicator
             let style = if result.is_error {
@@ -88,12 +96,17 @@ impl<'a> ConversationView<'a> {
         };
 
         if result.content.is_empty() {
-            let label = if result.is_error { "[Error: no output]" } else { "[OK]" };
+            let label = if result.is_error {
+                "[Error: no output]"
+            } else {
+                "[OK]"
+            };
             lines.push(Line::from(Span::styled(format!("  {}", label), style)));
         } else {
             // Truncate very long results (respecting char boundaries)
             let display_content = if result.content.len() > 500 {
-                let truncate_at = result.content
+                let truncate_at = result
+                    .content
                     .char_indices()
                     .take_while(|(i, _)| *i < 500)
                     .last()
@@ -109,7 +122,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_bash_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+    fn render_bash_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) {
         let command = parsed
             .and_then(|v| v.get("command"))
             .and_then(|v| v.as_str())
@@ -141,7 +159,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_read_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, _content_width: usize) {
+    fn render_read_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        _content_width: usize,
+    ) {
         let file_path = parsed
             .and_then(|v| v.get("file_path"))
             .and_then(|v| v.as_str())
@@ -158,7 +181,9 @@ impl<'a> ConversationView<'a> {
 
         // Show offset/limit if present
         if self.expand_tools {
-            let offset = parsed.and_then(|v| v.get("offset")).and_then(|v| v.as_u64());
+            let offset = parsed
+                .and_then(|v| v.get("offset"))
+                .and_then(|v| v.as_u64());
             let limit = parsed.and_then(|v| v.get("limit")).and_then(|v| v.as_u64());
 
             if offset.is_some() || limit.is_some() {
@@ -177,7 +202,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_write_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+    fn render_write_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) {
         let file_path = parsed
             .and_then(|v| v.get("file_path"))
             .and_then(|v| v.as_str())
@@ -198,7 +228,10 @@ impl<'a> ConversationView<'a> {
         lines.push(Line::from(vec![
             Span::styled("Write: ", self.theme.tool_name),
             Span::styled(display_path, self.theme.tool_input),
-            Span::styled(format!(" ({} lines)", line_count), self.theme.thinking_collapsed),
+            Span::styled(
+                format!(" ({} lines)", line_count),
+                self.theme.thinking_collapsed,
+            ),
         ]));
 
         // Show preview of content
@@ -224,7 +257,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_edit_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+    fn render_edit_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) {
         let file_path = parsed
             .and_then(|v| v.get("file_path"))
             .and_then(|v| v.as_str())
@@ -290,7 +328,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_grep_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, _content_width: usize) {
+    fn render_grep_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        _content_width: usize,
+    ) {
         let pattern = parsed
             .and_then(|v| v.get("pattern"))
             .and_then(|v| v.as_str())
@@ -299,7 +342,7 @@ impl<'a> ConversationView<'a> {
         let path = parsed
             .and_then(|v| v.get("path"))
             .and_then(|v| v.as_str())
-            .map(|s| abbreviate_path(s));
+            .map(abbreviate_path);
         let glob = parsed
             .and_then(|v| v.get("glob"))
             .and_then(|v| v.as_str())
@@ -327,7 +370,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_glob_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, _content_width: usize) {
+    fn render_glob_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        _content_width: usize,
+    ) {
         let pattern = parsed
             .and_then(|v| v.get("pattern"))
             .and_then(|v| v.as_str())
@@ -336,7 +384,7 @@ impl<'a> ConversationView<'a> {
         let path = parsed
             .and_then(|v| v.get("path"))
             .and_then(|v| v.as_str())
-            .map(|s| abbreviate_path(s));
+            .map(abbreviate_path);
 
         lines.push(Line::from(vec![
             Span::styled("Glob: ", self.theme.tool_name),
@@ -353,7 +401,12 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_task_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+    fn render_task_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) {
         let description = parsed
             .and_then(|v| v.get("description"))
             .and_then(|v| v.as_str())
@@ -373,7 +426,10 @@ impl<'a> ConversationView<'a> {
         // Header: Task (subagent_type): description
         lines.push(Line::from(vec![
             Span::styled("Task ", self.theme.agent_spawn),
-            Span::styled(format!("({})", subagent_type), self.theme.thinking_collapsed),
+            Span::styled(
+                format!("({})", subagent_type),
+                self.theme.thinking_collapsed,
+            ),
             Span::styled(": ", self.theme.agent_spawn),
             Span::styled(description, self.theme.tool_input),
         ]));
@@ -401,7 +457,13 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_generic_tool(&self, lines: &mut Vec<Line<'a>>, name: &str, input: &str, content_width: usize) {
+    fn render_generic_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        name: &str,
+        input: &str,
+        content_width: usize,
+    ) {
         lines.push(Line::from(vec![
             Span::styled("Tool: ", self.theme.tool_name),
             Span::styled(name.to_string(), self.theme.tool_name),
@@ -448,7 +510,12 @@ impl<'a> ConversationView<'a> {
                     }
                     lines.push(Line::from(""));
                 }
-                DisplayEntry::ToolCall { name, input, result, .. } => {
+                DisplayEntry::ToolCall {
+                    name,
+                    input,
+                    result,
+                    ..
+                } => {
                     self.render_tool_call(&mut lines, name, input, result.as_ref(), content_width);
                     lines.push(Line::from(""));
                 }
@@ -460,10 +527,7 @@ impl<'a> ConversationView<'a> {
                     } else {
                         ("Result", self.theme.tool_result)
                     };
-                    lines.push(Line::from(Span::styled(
-                        format!("[{}]", label),
-                        style,
-                    )));
+                    lines.push(Line::from(Span::styled(format!("[{}]", label), style)));
                     if self.expand_tools && !content.is_empty() {
                         // Truncate very long results (respecting char boundaries)
                         let display_content = if content.len() > 500 {
@@ -478,10 +542,7 @@ impl<'a> ConversationView<'a> {
                             content.clone()
                         };
                         for line in wrap_text(&display_content, content_width) {
-                            lines.push(Line::from(Span::styled(
-                                format!("  {}", line),
-                                style,
-                            )));
+                            lines.push(Line::from(Span::styled(format!("  {}", line), style)));
                         }
                     }
                     lines.push(Line::from(""));
@@ -513,9 +574,9 @@ impl<'a> ConversationView<'a> {
                     ..
                 } => {
                     // Extract tool name from hook_name if present (e.g., "PostToolUse:Read" -> "Read")
-                    let tool_info = hook_name.as_ref().and_then(|name| {
-                        name.split(':').nth(1).map(|s| s.to_string())
-                    });
+                    let tool_info = hook_name
+                        .as_ref()
+                        .and_then(|name| name.split(':').nth(1).map(|s| s.to_string()));
 
                     // Build the header line
                     let header = if let Some(tool) = &tool_info {
@@ -685,7 +746,10 @@ fn abbreviate_path(path: &str) -> String {
             if i == 0 || i >= parts.len() - 2 || part.is_empty() {
                 part.to_string()
             } else {
-                part.chars().next().map(|c| c.to_string()).unwrap_or_default()
+                part.chars()
+                    .next()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default()
             }
         })
         .collect();
