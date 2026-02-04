@@ -198,9 +198,11 @@ fn draw(frame: &mut Frame, app: &mut App) {
     );
 
     // Draw conversation pane
+    // VecDeque needs to be made contiguous to get a slice for the view
+    let conversation_entries = app.conversation.make_contiguous();
     let conversation_focused = app.focus == app::FocusPane::Conversation;
     let conversation_view = ConversationView::new(
-        &app.conversation,
+        conversation_entries,
         conversation_focused,
         &app.theme,
         app.show_thinking,
@@ -268,22 +270,37 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         follow_indicator, thinking_indicator, expand_indicator
     );
 
+    // Build warning indicators
+    let mut warnings = Vec::new();
+    if app.entries_truncated > 0 {
+        warnings.push(format!("{}+ entries truncated", app.entries_truncated));
+    }
+    if !app.parse_errors.is_empty() {
+        warnings.push(format!("{} parse errors", app.parse_errors.len()));
+    }
+
     let error_text = app
         .error_message
         .as_ref()
         .map(|e| format!(" Error: {} ", e))
         .unwrap_or_default();
 
-    let line = if error_text.is_empty() {
-        Line::from(Span::styled(status_text, app.theme.status_bar))
+    let warning_text = if warnings.is_empty() {
+        String::new()
     } else {
-        Line::from(vec![
-            Span::styled(error_text, app.theme.tool_error),
-            Span::styled(status_text, app.theme.status_bar),
-        ])
+        format!(" [{}] ", warnings.join(", "))
     };
 
-    let status_bar = Paragraph::new(line);
+    let mut spans = Vec::new();
+    if !error_text.is_empty() {
+        spans.push(Span::styled(error_text, app.theme.tool_error));
+    }
+    if !warning_text.is_empty() {
+        spans.push(Span::styled(warning_text, app.theme.thinking));
+    }
+    spans.push(Span::styled(status_text, app.theme.status_bar));
+
+    let status_bar = Paragraph::new(Line::from(spans));
     frame.render_widget(status_bar, area);
 }
 

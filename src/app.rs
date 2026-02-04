@@ -1,10 +1,16 @@
+use std::collections::VecDeque;
+
 use anyhow::Result;
 
 use crate::logs::{
-    DisplayEntry, Project, Session, SessionWatcher, discover_projects, discover_sessions,
-    merge_tool_results, parse_jsonl_file,
+    DisplayEntry, ParseResult, Project, Session, SessionWatcher, discover_projects,
+    discover_sessions, merge_tool_results, parse_jsonl_file,
 };
 use crate::ui::{ConversationState, ProjectListState, SessionListState, Theme};
+
+/// Maximum number of conversation entries to keep in memory.
+/// When exceeded, oldest entries are dropped.
+const MAX_CONVERSATION_ENTRIES: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPane {
@@ -17,7 +23,7 @@ pub struct App {
     pub focus: FocusPane,
     pub projects: Vec<Project>,
     pub sessions: Vec<Session>,
-    pub conversation: Vec<DisplayEntry>,
+    pub conversation: VecDeque<DisplayEntry>,
     pub project_state: ProjectListState,
     pub session_state: SessionListState,
     pub conversation_state: ConversationState,
@@ -28,6 +34,10 @@ pub struct App {
     pub show_help: bool,
     pub viewport_height: Option<usize>,
     pub error_message: Option<String>,
+    /// Number of entries dropped from the front due to MAX_CONVERSATION_ENTRIES limit
+    pub entries_truncated: usize,
+    /// Parse errors encountered (line number and error message)
+    pub parse_errors: Vec<String>,
 }
 
 impl App {
@@ -43,7 +53,7 @@ impl App {
             focus: FocusPane::Projects,
             projects,
             sessions,
-            conversation: Vec::new(),
+            conversation: VecDeque::new(),
             project_state: ProjectListState::new(),
             session_state: SessionListState::new(),
             conversation_state: ConversationState::new(),
@@ -54,6 +64,8 @@ impl App {
             show_help: false,
             viewport_height: None,
             error_message: None,
+            entries_truncated: 0,
+            parse_errors: Vec::new(),
         };
 
         // Load initial conversation if there's a session
@@ -162,24 +174,40 @@ impl App {
 
     pub fn load_conversation_for_selected_session(&mut self) {
         self.watcher.stop();
+        self.entries_truncated = 0;
+        self.parse_errors.clear();
 
-        if let Some(idx) = self.session_state.selected() {
-            if let Some(session) = self.sessions.get(idx) {
-                match parse_jsonl_file(&session.log_path) {
-                    Ok(entries) => {
-                        self.conversation = merge_tool_results(entries);
-                        self.conversation_state = ConversationState::new();
-                        self.error_message = None;
+        // Clone the path early to avoid borrow issues
+        let log_path = self
+            .session_state
+            .selected()
+            .and_then(|idx| self.sessions.get(idx))
+            .map(|session| session.log_path.clone());
 
-                        // Start watching this file
-                        if let Err(e) = self.watcher.watch(session.log_path.clone()) {
-                            self.error_message = Some(format!("Failed to watch file: {}", e));
-                        }
+        if let Some(path) = log_path {
+            match parse_jsonl_file(&path) {
+                Ok(ParseResult {
+                    entries,
+                    errors,
+                    bytes_read,
+                }) => {
+                    let merged = merge_tool_results(entries);
+                    self.conversation = VecDeque::from(merged);
+                    self.parse_errors = errors;
+                    self.apply_conversation_limit();
+                    self.conversation_state = ConversationState::new();
+                    self.error_message = None;
+
+                    // Start watching from where we left off (fixes efficiency bug)
+                    if let Err(e) = self.watcher.watch(path) {
+                        self.error_message = Some(format!("Failed to watch file: {}", e));
+                    } else {
+                        self.watcher.set_file_position(bytes_read);
                     }
-                    Err(e) => {
-                        self.error_message = Some(format!("Failed to load conversation: {}", e));
-                        self.conversation.clear();
-                    }
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to load conversation: {}", e));
+                    self.conversation.clear();
                 }
             }
         } else {
@@ -187,11 +215,25 @@ impl App {
         }
     }
 
+    /// Enforce MAX_CONVERSATION_ENTRIES limit by dropping oldest entries
+    fn apply_conversation_limit(&mut self) {
+        while self.conversation.len() > MAX_CONVERSATION_ENTRIES {
+            self.conversation.pop_front();
+            self.entries_truncated += 1;
+        }
+    }
+
     pub fn refresh_conversation(&mut self) {
         if let Some(path) = self.watcher.current_path().cloned() {
             match crate::logs::parse_jsonl_from_position(&path, self.watcher.file_position()) {
-                Ok((new_entries, new_pos)) => {
+                Ok(ParseResult {
+                    entries: new_entries,
+                    errors,
+                    bytes_read: new_pos,
+                }) => {
                     self.watcher.set_file_position(new_pos);
+                    self.parse_errors.extend(errors);
+
                     if !new_entries.is_empty() {
                         // Merge new entries (handles results within the new batch)
                         let merged_new = merge_tool_results(new_entries);
@@ -199,7 +241,7 @@ impl App {
                         // Check if last existing entry is a ToolCall that needs its result
                         // merged from the first new entry
                         if let Some(DisplayEntry::ToolCall { id, result, .. }) =
-                            self.conversation.last_mut()
+                            self.conversation.back_mut()
                             && result.is_none()
                             && let Some(DisplayEntry::ToolResult {
                                 tool_use_id,
@@ -216,10 +258,11 @@ impl App {
                             });
                             // Skip the first entry since we merged it
                             self.conversation.extend(merged_new.into_iter().skip(1));
-                            return;
+                        } else {
+                            self.conversation.extend(merged_new);
                         }
 
-                        self.conversation.extend(merged_new);
+                        self.apply_conversation_limit();
                     }
                 }
                 Err(e) => {
@@ -262,6 +305,24 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        Self::new(Theme::default()).expect("Failed to create App")
+        // Infallible - returns empty state on error
+        Self::new(Theme::default()).unwrap_or_else(|_| Self {
+            focus: FocusPane::Projects,
+            projects: Vec::new(),
+            sessions: Vec::new(),
+            conversation: VecDeque::new(),
+            project_state: ProjectListState::new(),
+            session_state: SessionListState::new(),
+            conversation_state: ConversationState::new(),
+            theme: Theme::default(),
+            watcher: SessionWatcher::new(),
+            show_thinking: false,
+            expand_tools: true,
+            show_help: false,
+            viewport_height: None,
+            error_message: Some("Failed to initialize application".to_string()),
+            entries_truncated: 0,
+            parse_errors: Vec::new(),
+        })
     }
 }

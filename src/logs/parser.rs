@@ -1,62 +1,118 @@
 use anyhow::Result;
-use std::io::{BufRead, BufReader};
+use std::io::{Read as _, Seek, SeekFrom};
 use std::path::Path;
 
 use super::types::{
     ContentBlock, ContentValue, DisplayEntry, LogEntry, ToolCallResult, ToolResultContent,
 };
 
-pub fn parse_jsonl_file(path: &Path) -> Result<Vec<DisplayEntry>> {
-    let file = std::fs::File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut entries = Vec::new();
-
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        match serde_json::from_str::<LogEntry>(&line) {
-            Ok(entry) => {
-                entries.extend(convert_log_entry(&entry));
-            }
-            Err(_) => {
-                // Skip malformed lines - error recovery
-                continue;
-            }
-        }
-    }
-
-    Ok(entries)
+/// Result of parsing a JSONL file, including any errors encountered
+pub struct ParseResult {
+    pub entries: Vec<DisplayEntry>,
+    /// Parse errors (line descriptions, not fatal)
+    pub errors: Vec<String>,
+    /// Number of bytes read from the file
+    pub bytes_read: u64,
 }
 
-pub fn parse_jsonl_from_position(path: &Path, position: u64) -> Result<(Vec<DisplayEntry>, u64)> {
-    use std::io::{Read, Seek, SeekFrom};
-
+pub fn parse_jsonl_file(path: &Path) -> Result<ParseResult> {
     let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(position))?;
-
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
-    let new_position = position + content.len() as u64;
     let mut entries = Vec::new();
+    let mut errors = Vec::new();
 
-    for line in content.lines() {
+    // Track position of last successfully parsed line ending
+    let mut bytes_consumed = 0usize;
+
+    for (line_num, line) in content.lines().enumerate() {
+        // Calculate where this line ends (including the newline if present)
+        let line_end = bytes_consumed + line.len();
+        let with_newline = if content.as_bytes().get(line_end) == Some(&b'\n') {
+            line_end + 1
+        } else {
+            line_end
+        };
+
         if line.trim().is_empty() {
+            bytes_consumed = with_newline;
             continue;
         }
 
         match serde_json::from_str::<LogEntry>(line) {
             Ok(entry) => {
                 entries.extend(convert_log_entry(&entry));
+                bytes_consumed = with_newline;
             }
-            Err(_) => continue,
+            Err(e) => {
+                // Only count as consumed if the line is complete (has newline or is at EOF)
+                // An incomplete line at EOF might just be partially written
+                if with_newline <= content.len() {
+                    errors.push(format!("Line {}: {}", line_num + 1, e));
+                    bytes_consumed = with_newline;
+                }
+                // If it's an incomplete line at EOF, don't advance bytes_consumed
+                // so we'll re-read it next time when it's complete
+            }
         }
     }
 
-    Ok((entries, new_position))
+    Ok(ParseResult {
+        entries,
+        errors,
+        bytes_read: bytes_consumed as u64,
+    })
+}
+
+pub fn parse_jsonl_from_position(path: &Path, position: u64) -> Result<ParseResult> {
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(position))?;
+
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+
+    // Track position of last successfully parsed line ending
+    let mut bytes_consumed = 0usize;
+
+    for (line_num, line) in content.lines().enumerate() {
+        // Calculate where this line ends (including the newline if present)
+        let line_end = bytes_consumed + line.len();
+        let with_newline = if content.as_bytes().get(line_end) == Some(&b'\n') {
+            line_end + 1
+        } else {
+            line_end
+        };
+
+        if line.trim().is_empty() {
+            bytes_consumed = with_newline;
+            continue;
+        }
+
+        match serde_json::from_str::<LogEntry>(line) {
+            Ok(entry) => {
+                entries.extend(convert_log_entry(&entry));
+                bytes_consumed = with_newline;
+            }
+            Err(e) => {
+                // Only count as consumed if the line is complete (has newline or is at EOF)
+                if with_newline <= content.len() {
+                    errors.push(format!("Incremental line {}: {}", line_num + 1, e));
+                    bytes_consumed = with_newline;
+                }
+                // Incomplete line at EOF - don't advance, we'll re-read when complete
+            }
+        }
+    }
+
+    Ok(ParseResult {
+        entries,
+        errors,
+        bytes_read: position + bytes_consumed as u64,
+    })
 }
 
 fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
