@@ -82,3 +82,9 @@ Tab
 
 # Main Conversation Tab
 Sleep 20s
+
+Hide
+	Ctrl+A
+	Type ":kill-session"
+	Enter
+Show
