@@ -64,10 +64,7 @@ fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
     match entry.entry_type.as_str() {
         "user" => {
             if let Some(ref message) = entry.message {
-                let text = extract_message_text(message);
-                if !text.is_empty() {
-                    display_entries.push(DisplayEntry::UserMessage { text, timestamp });
-                }
+                display_entries.extend(parse_user_message(message, timestamp));
             }
         }
         "progress" => {
@@ -86,24 +83,74 @@ fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
     display_entries
 }
 
-fn extract_message_text(message: &super::types::MessageContent) -> String {
+fn parse_user_message(
+    message: &super::types::MessageContent,
+    timestamp: Option<chrono::DateTime<chrono::Utc>>,
+) -> Vec<DisplayEntry> {
+    let mut entries = Vec::new();
+
     match &message.content {
-        Some(ContentValue::Text(text)) => text.clone(),
-        Some(ContentValue::Blocks(blocks)) => {
-            blocks
-                .iter()
-                .filter_map(|block| {
-                    if let ContentBlock::Text { text } = block {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+        Some(ContentValue::Text(text)) => {
+            if !text.is_empty() {
+                entries.push(DisplayEntry::UserMessage {
+                    text: text.clone(),
+                    timestamp,
+                });
+            }
         }
-        None => String::new(),
+        Some(ContentValue::Blocks(blocks)) => {
+            let mut text_parts = Vec::new();
+            for block in blocks {
+                match block {
+                    ContentBlock::Text { text } => {
+                        text_parts.push(text.as_str());
+                    }
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => {
+                        // Flush any accumulated text first
+                        if !text_parts.is_empty() {
+                            entries.push(DisplayEntry::UserMessage {
+                                text: text_parts.join("\n"),
+                                timestamp,
+                            });
+                            text_parts.clear();
+                        }
+                        // Add the tool result
+                        let content_str = match content {
+                            Some(ToolResultContent::Text(text)) => text.clone(),
+                            Some(ToolResultContent::Blocks(blocks)) => blocks
+                                .iter()
+                                .filter_map(|b| b.text.as_ref())
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            None => String::new(),
+                        };
+                        entries.push(DisplayEntry::ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: content_str,
+                            is_error: is_error.unwrap_or(false),
+                            timestamp,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            // Flush remaining text
+            if !text_parts.is_empty() {
+                entries.push(DisplayEntry::UserMessage {
+                    text: text_parts.join("\n"),
+                    timestamp,
+                });
+            }
+        }
+        None => {}
     }
+
+    entries
 }
 
 fn parse_progress_data(
@@ -112,12 +159,19 @@ fn parse_progress_data(
 ) -> Vec<DisplayEntry> {
     let mut entries = Vec::new();
 
-    // Check for message in progress data (assistant responses come through here)
+    // Check for message in progress data (assistant responses and tool results come through here)
     if let Some(message) = data.get("message") {
         if let Some(role) = message.get("role").and_then(|r| r.as_str()) {
-            if role == "assistant" {
-                if let Some(content) = message.get("content") {
-                    entries.extend(parse_content_blocks(content, timestamp));
+            if let Some(content) = message.get("content") {
+                match role {
+                    "assistant" => {
+                        entries.extend(parse_content_blocks(content, timestamp));
+                    }
+                    "user" => {
+                        // Tool results come as user messages
+                        entries.extend(parse_content_blocks(content, timestamp));
+                    }
+                    _ => {}
                 }
             }
         }
