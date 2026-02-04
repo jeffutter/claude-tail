@@ -4,6 +4,12 @@ A terminal UI for browsing Claude Code conversation logs.
 
 Claude Code stores conversation history as JSONL files in `~/.claude/projects/`. This tool provides a fast, vim-style interface to browse those logs—including tool calls, thinking blocks, and sub-agent conversations.
 
+## Demo
+
+<p align="center">
+  <img src="docs/demo.gif" width="70%" alt="Demo">
+</p>
+
 ## Features
 
 - **Four-pane navigation**: Projects → Sessions → Agents → Conversation
