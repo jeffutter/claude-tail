@@ -1,0 +1,130 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    #[serde(default)]
+    pub message: Option<MessageContent>,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub timestamp: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageContent {
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub content: Option<ContentValue>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ContentValue {
+    Text(String),
+    Blocks(Vec<ContentBlock>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        #[serde(default)]
+        content: Option<ToolResultContent>,
+        #[serde(default)]
+        is_error: Option<bool>,
+    },
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolResultContent {
+    Text(String),
+    Blocks(Vec<ToolResultBlock>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResultBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DisplayEntry {
+    UserMessage {
+        text: String,
+        timestamp: Option<DateTime<Utc>>,
+    },
+    AssistantText {
+        text: String,
+        timestamp: Option<DateTime<Utc>>,
+    },
+    ToolCall {
+        name: String,
+        input: String,
+        id: String,
+        timestamp: Option<DateTime<Utc>>,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+        timestamp: Option<DateTime<Utc>>,
+    },
+    Thinking {
+        text: String,
+        collapsed: bool,
+        timestamp: Option<DateTime<Utc>>,
+    },
+    HookEvent {
+        event: String,
+        details: String,
+        timestamp: Option<DateTime<Utc>>,
+    },
+    AgentSpawn {
+        agent_type: String,
+        description: String,
+        timestamp: Option<DateTime<Utc>>,
+    },
+}
+
+impl DisplayEntry {
+    pub fn timestamp(&self) -> Option<DateTime<Utc>> {
+        match self {
+            DisplayEntry::UserMessage { timestamp, .. } => *timestamp,
+            DisplayEntry::AssistantText { timestamp, .. } => *timestamp,
+            DisplayEntry::ToolCall { timestamp, .. } => *timestamp,
+            DisplayEntry::ToolResult { timestamp, .. } => *timestamp,
+            DisplayEntry::Thinking { timestamp, .. } => *timestamp,
+            DisplayEntry::HookEvent { timestamp, .. } => *timestamp,
+            DisplayEntry::AgentSpawn { timestamp, .. } => *timestamp,
+        }
+    }
+}
