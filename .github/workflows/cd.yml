@@ -79,6 +79,23 @@ jobs:
           ########## create sha256 ##########
           shasum -a 256 $RELEASE_NAME.tar.gz > $RELEASE_NAME.sha256
 
+      - name: Releasing assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/${{ matrix.job.target }}/release/claude-tail-*.tar.gz
+            target/${{ matrix.job.target }}/release/claude-tail-*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  nix-cache:
+    name: Push to Cachix
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
       - uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
@@ -88,12 +105,3 @@ jobs:
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
       - run: nix build --accept-flake-config --option log-lines 200
       - run: nix flake check --accept-flake-config
-
-      - name: Releasing assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/${{ matrix.job.target }}/release/claude-tail-*.tar.gz
-            target/${{ matrix.job.target }}/release/claude-tail-*.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
