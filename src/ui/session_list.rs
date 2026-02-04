@@ -3,8 +3,9 @@ use ratatui::{
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget},
+    widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use super::styles::Theme;
 use crate::logs::Session;
@@ -12,16 +13,27 @@ use crate::logs::Session;
 pub struct SessionList<'a> {
     sessions: &'a [Session],
     focused: bool,
+    collapsed: bool,
     theme: &'a Theme,
 }
 
 impl<'a> SessionList<'a> {
-    pub fn new(sessions: &'a [Session], focused: bool, theme: &'a Theme) -> Self {
+    pub fn new(sessions: &'a [Session], focused: bool, collapsed: bool, theme: &'a Theme) -> Self {
         Self {
             sessions,
             focused,
+            collapsed,
             theme,
         }
+    }
+
+    /// Calculate the maximum display width needed for the session list
+    pub fn max_content_width(sessions: &[Session]) -> u16 {
+        sessions
+            .iter()
+            .map(|s| s.display_name().width() + 2) // +2 for "> " prefix
+            .max()
+            .unwrap_or(15) as u16
     }
 }
 
@@ -29,6 +41,22 @@ impl<'a> StatefulWidget for SessionList<'a> {
     type State = ListState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let (border_style, title_style) = if self.focused {
+            (self.theme.border_focused, self.theme.title_focused)
+        } else {
+            (self.theme.border, self.theme.title)
+        };
+
+        if self.collapsed {
+            // Render collapsed view - just "S" with borders
+            let block = Block::default()
+                .title(Span::styled("S", title_style))
+                .borders(Borders::ALL)
+                .border_style(border_style);
+            block.render(area, buf);
+            return;
+        }
+
         let items: Vec<ListItem> = self
             .sessions
             .iter()
@@ -48,12 +76,6 @@ impl<'a> StatefulWidget for SessionList<'a> {
                 )]))
             })
             .collect();
-
-        let (border_style, title_style) = if self.focused {
-            (self.theme.border_focused, self.theme.title_focused)
-        } else {
-            (self.theme.border, self.theme.title)
-        };
 
         let block = Block::default()
             .title(Span::styled(" Sessions ", title_style))

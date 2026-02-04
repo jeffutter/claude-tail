@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Local};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,47 @@ pub struct Project {
     pub name: String,
     pub path: PathBuf,
     pub encoded_path: String,
+    pub original_path: PathBuf,
+}
+
+impl Project {
+    /// Returns an abbreviated path like `~/s/c/my-project`
+    pub fn abbreviated_path(&self) -> String {
+        let home = dirs::home_dir();
+        let path_str = self.original_path.to_string_lossy();
+
+        // Replace home directory with ~
+        let path_str = if let Some(ref home) = home {
+            let home_str = home.to_string_lossy();
+            if path_str.starts_with(home_str.as_ref()) {
+                format!("~{}", &path_str[home_str.len()..])
+            } else {
+                path_str.to_string()
+            }
+        } else {
+            path_str.to_string()
+        };
+
+        // Abbreviate all components except the last one
+        let parts: Vec<&str> = path_str.split('/').collect();
+        if parts.len() <= 2 {
+            return path_str;
+        }
+
+        let abbreviated: Vec<String> = parts
+            .iter()
+            .enumerate()
+            .map(|(i, part)| {
+                if i == parts.len() - 1 || part.is_empty() || *part == "~" {
+                    part.to_string()
+                } else {
+                    part.chars().next().map(|c| c.to_string()).unwrap_or_default()
+                }
+            })
+            .collect();
+
+        abbreviated.join("/")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,12 +96,13 @@ pub fn discover_projects() -> Result<Vec<Project>> {
                 .unwrap_or("")
                 .to_string();
 
-            let name = decode_project_name(&encoded_path);
+            let (name, original_path) = decode_project_path(&encoded_path);
 
             projects.push(Project {
                 name,
                 path,
                 encoded_path,
+                original_path,
             });
         }
     }
@@ -68,15 +111,21 @@ pub fn discover_projects() -> Result<Vec<Project>> {
     Ok(projects)
 }
 
-fn decode_project_name(encoded: &str) -> String {
+/// Decodes the encoded project path and returns (name, original_path)
+fn decode_project_path(encoded: &str) -> (String, PathBuf) {
     // Claude encodes paths like "-Users-username-src-project"
+    // The leading dash represents the root /
+    let path_str = encoded.replace('-', "/");
+    let original_path = PathBuf::from(&path_str);
+
     // Extract just the last component as the display name
-    let parts: Vec<&str> = encoded.split('-').collect();
-    if parts.len() > 1 {
-        parts.last().unwrap_or(&encoded).to_string()
-    } else {
-        encoded.to_string()
-    }
+    let name = original_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(encoded)
+        .to_string();
+
+    (name, original_path)
 }
 
 pub fn discover_sessions(project: &Project) -> Result<Vec<Session>> {
@@ -133,21 +182,33 @@ fn load_session_summaries(path: &Path) -> HashMap<String, Option<String>> {
 }
 
 impl Session {
+    /// Returns the timestamp formatted as HH:MM:SS
+    pub fn timestamp_str(&self) -> String {
+        let datetime: DateTime<Local> = self.last_modified.into();
+        datetime.format("%H:%M:%S").to_string()
+    }
+
+    /// Returns the session ID (possibly truncated)
+    pub fn short_id(&self) -> String {
+        if self.id.len() > 8 {
+            format!("{}...", &self.id[..8])
+        } else {
+            self.id.clone()
+        }
+    }
+
+    /// Returns display name with timestamp: "summary (HH:MM:SS)" or "id... (HH:MM:SS)"
     pub fn display_name(&self) -> String {
+        let timestamp = self.timestamp_str();
         if let Some(ref summary) = self.summary {
             // Truncate long summaries
-            if summary.len() > 50 {
-                format!("{}...", &summary[..47])
+            if summary.len() > 40 {
+                format!("{}... ({})", &summary[..37], timestamp)
             } else {
-                summary.clone()
+                format!("{} ({})", summary, timestamp)
             }
         } else {
-            // Show shortened session ID
-            if self.id.len() > 8 {
-                format!("{}...", &self.id[..8])
-            } else {
-                self.id.clone()
-            }
+            format!("{} ({})", self.short_id(), timestamp)
         }
     }
 }

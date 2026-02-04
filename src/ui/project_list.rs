@@ -3,8 +3,9 @@ use ratatui::{
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget},
+    widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use super::styles::Theme;
 use crate::logs::Project;
@@ -12,16 +13,27 @@ use crate::logs::Project;
 pub struct ProjectList<'a> {
     projects: &'a [Project],
     focused: bool,
+    collapsed: bool,
     theme: &'a Theme,
 }
 
 impl<'a> ProjectList<'a> {
-    pub fn new(projects: &'a [Project], focused: bool, theme: &'a Theme) -> Self {
+    pub fn new(projects: &'a [Project], focused: bool, collapsed: bool, theme: &'a Theme) -> Self {
         Self {
             projects,
             focused,
+            collapsed,
             theme,
         }
+    }
+
+    /// Calculate the maximum display width needed for the project list
+    pub fn max_content_width(projects: &[Project]) -> u16 {
+        projects
+            .iter()
+            .map(|p| p.abbreviated_path().width() + 2) // +2 for "> " prefix
+            .max()
+            .unwrap_or(10) as u16
     }
 }
 
@@ -29,6 +41,22 @@ impl<'a> StatefulWidget for ProjectList<'a> {
     type State = ListState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let (border_style, title_style) = if self.focused {
+            (self.theme.border_focused, self.theme.title_focused)
+        } else {
+            (self.theme.border, self.theme.title)
+        };
+
+        if self.collapsed {
+            // Render collapsed view - just "P" with borders
+            let block = Block::default()
+                .title(Span::styled("P", title_style))
+                .borders(Borders::ALL)
+                .border_style(border_style);
+            block.render(area, buf);
+            return;
+        }
+
         let items: Vec<ListItem> = self
             .projects
             .iter()
@@ -43,17 +71,11 @@ impl<'a> StatefulWidget for ProjectList<'a> {
                 };
 
                 ListItem::new(Line::from(vec![Span::styled(
-                    format!("{}{}", prefix, project.name),
+                    format!("{}{}", prefix, project.abbreviated_path()),
                     style,
                 )]))
             })
             .collect();
-
-        let (border_style, title_style) = if self.focused {
-            (self.theme.border_focused, self.theme.title_focused)
-        } else {
-            (self.theme.border, self.theme.title)
-        };
 
         let block = Block::default()
             .title(Span::styled(" Projects ", title_style))

@@ -24,7 +24,7 @@ use ratatui::{
 
 use app::App;
 use input::{handle_key_event, Action};
-use ui::{AppLayout, ConversationView, ProjectList, SessionList};
+use ui::{AppLayout, ConversationView, FocusedPane, LayoutConfig, ProjectList, SessionList};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -95,7 +95,25 @@ where
 
 fn draw(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
-    let layout = AppLayout::new(size);
+
+    // Determine which pane is focused
+    let focused_pane = match app.focus {
+        app::FocusPane::Projects => FocusedPane::Projects,
+        app::FocusPane::Sessions => FocusedPane::Sessions,
+        app::FocusPane::Conversation => FocusedPane::Conversation,
+    };
+
+    // Calculate max content widths
+    let max_project_width = ProjectList::max_content_width(&app.projects);
+    let max_session_width = SessionList::max_content_width(&app.sessions);
+
+    let layout_config = LayoutConfig {
+        focused_pane,
+        max_project_width,
+        max_session_width,
+    };
+
+    let layout = AppLayout::new(size, layout_config);
 
     // Update viewport height for scrolling calculations
     app.viewport_height = Some(layout.conversation.height.saturating_sub(2) as usize);
@@ -105,7 +123,8 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
     // Draw projects pane
     let projects_focused = app.focus == app::FocusPane::Projects;
-    let project_list = ProjectList::new(&app.projects, projects_focused, &app.theme);
+    let projects_collapsed = app.focus != app::FocusPane::Projects;
+    let project_list = ProjectList::new(&app.projects, projects_focused, projects_collapsed, &app.theme);
     StatefulWidget::render(
         project_list,
         layout.projects,
@@ -115,7 +134,8 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
     // Draw sessions pane
     let sessions_focused = app.focus == app::FocusPane::Sessions;
-    let session_list = SessionList::new(&app.sessions, sessions_focused, &app.theme);
+    let sessions_collapsed = app.focus != app::FocusPane::Sessions;
+    let session_list = SessionList::new(&app.sessions, sessions_focused, sessions_collapsed, &app.theme);
     StatefulWidget::render(
         session_list,
         layout.sessions,
