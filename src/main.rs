@@ -26,7 +26,9 @@ use ratatui::{
 
 use app::App;
 use input::{Action, handle_key_event};
-use ui::{AppLayout, ConversationView, FocusedPane, LayoutConfig, ProjectList, SessionList};
+use ui::{
+    AgentList, AppLayout, ConversationView, FocusedPane, LayoutConfig, ProjectList, SessionList,
+};
 
 #[derive(Parser)]
 #[command(name = "claude-tail")]
@@ -144,17 +146,20 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let focused_pane = match app.focus {
         app::FocusPane::Projects => FocusedPane::Projects,
         app::FocusPane::Sessions => FocusedPane::Sessions,
+        app::FocusPane::Agents => FocusedPane::Agents,
         app::FocusPane::Conversation => FocusedPane::Conversation,
     };
 
     // Calculate max content widths
     let max_project_width = ProjectList::max_content_width(&app.projects);
     let max_session_width = SessionList::max_content_width(&app.sessions);
+    let max_agent_width = AgentList::max_content_width(&app.agents);
 
     let layout_config = LayoutConfig {
         focused_pane,
         max_project_width,
         max_session_width,
+        max_agent_width,
     };
 
     let layout = AppLayout::new(size, layout_config);
@@ -197,6 +202,17 @@ fn draw(frame: &mut Frame, app: &mut App) {
         &mut app.session_state.list_state,
     );
 
+    // Draw agents pane
+    let agents_focused = app.focus == app::FocusPane::Agents;
+    let agents_collapsed = app.focus != app::FocusPane::Agents;
+    let agent_list = AgentList::new(&app.agents, agents_focused, agents_collapsed, &app.theme);
+    StatefulWidget::render(
+        agent_list,
+        layout.agents,
+        frame.buffer_mut(),
+        &mut app.agent_state.list_state,
+    );
+
     // Draw conversation pane
     // VecDeque needs to be made contiguous to get a slice for the view
     let conversation_entries = app.conversation.make_contiguous();
@@ -227,6 +243,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     let project_path = app.selected_project_path().unwrap_or_default();
     let session_name = app.selected_session_name().unwrap_or_default();
+    let agent_name = app.selected_agent_name().unwrap_or_default();
 
     let mut spans = vec![
         Span::styled(" claude-tail ", app.theme.title_focused),
@@ -240,6 +257,12 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     if !session_name.is_empty() {
         spans.push(Span::styled(" > ", app.theme.border));
         spans.push(Span::styled(session_name, app.theme.assistant_text));
+    }
+
+    // Show agent name only if it's not the main agent
+    if !agent_name.is_empty() && agent_name != "Main" {
+        spans.push(Span::styled(" > ", app.theme.border));
+        spans.push(Span::styled(agent_name, app.theme.tool_name));
     }
 
     let header = Paragraph::new(Line::from(spans));

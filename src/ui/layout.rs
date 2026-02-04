@@ -1,6 +1,6 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-/// Minimum width for collapsed columns (just "P" or "S" with borders)
+/// Minimum width for collapsed columns (just "P", "S", or "A" with borders)
 const COLLAPSED_WIDTH: u16 = 3;
 
 /// Padding for expanded columns (border + space on each side)
@@ -10,6 +10,7 @@ pub struct AppLayout {
     pub header: Rect,
     pub projects: Rect,
     pub sessions: Rect,
+    pub agents: Rect,
     pub conversation: Rect,
     pub status_bar: Rect,
 }
@@ -18,6 +19,7 @@ pub struct AppLayout {
 pub enum FocusedPane {
     Projects,
     Sessions,
+    Agents,
     Conversation,
 }
 
@@ -25,6 +27,7 @@ pub struct LayoutConfig {
     pub focused_pane: FocusedPane,
     pub max_project_width: u16,
     pub max_session_width: u16,
+    pub max_agent_width: u16,
 }
 
 impl AppLayout {
@@ -44,29 +47,35 @@ impl AppLayout {
         let status_bar = vertical[2];
 
         // Calculate column widths based on focus
-        let (projects_width, sessions_width) = match config.focused_pane {
+        let (projects_width, sessions_width, agents_width) = match config.focused_pane {
             FocusedPane::Projects => {
-                // Projects expanded, sessions collapsed
+                // Projects expanded, others collapsed
                 let proj_width = (config.max_project_width + COLUMN_PADDING).min(main.width / 3);
-                (proj_width, COLLAPSED_WIDTH)
+                (proj_width, COLLAPSED_WIDTH, COLLAPSED_WIDTH)
             }
             FocusedPane::Sessions => {
-                // Sessions expanded, projects collapsed
+                // Sessions expanded, others collapsed
                 let sess_width = (config.max_session_width + COLUMN_PADDING).min(main.width / 2);
-                (COLLAPSED_WIDTH, sess_width)
+                (COLLAPSED_WIDTH, sess_width, COLLAPSED_WIDTH)
+            }
+            FocusedPane::Agents => {
+                // Agents expanded, others collapsed
+                let agent_width = (config.max_agent_width + COLUMN_PADDING).min(main.width / 3);
+                (COLLAPSED_WIDTH, COLLAPSED_WIDTH, agent_width)
             }
             FocusedPane::Conversation => {
-                // Both collapsed
-                (COLLAPSED_WIDTH, COLLAPSED_WIDTH)
+                // All collapsed
+                (COLLAPSED_WIDTH, COLLAPSED_WIDTH, COLLAPSED_WIDTH)
             }
         };
 
-        // Horizontal split for main content: projects, sessions, conversation
+        // Horizontal split for main content: projects, sessions, agents, conversation
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Length(projects_width),
                 Constraint::Length(sessions_width),
+                Constraint::Length(agents_width),
                 Constraint::Min(20), // Conversation takes remaining space
             ])
             .split(main);
@@ -75,7 +84,8 @@ impl AppLayout {
             header,
             projects: horizontal[0],
             sessions: horizontal[1],
-            conversation: horizontal[2],
+            agents: horizontal[2],
+            conversation: horizontal[3],
             status_bar,
         }
     }

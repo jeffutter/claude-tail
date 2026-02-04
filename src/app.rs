@@ -3,10 +3,10 @@ use std::collections::VecDeque;
 use anyhow::Result;
 
 use crate::logs::{
-    DisplayEntry, ParseResult, Project, Session, SessionWatcher, discover_projects,
-    discover_sessions, merge_tool_results, parse_jsonl_file,
+    Agent, DisplayEntry, ParseResult, Project, Session, SessionWatcher, discover_agents,
+    discover_projects, discover_sessions, merge_tool_results, parse_jsonl_file,
 };
-use crate::ui::{ConversationState, ProjectListState, SessionListState, Theme};
+use crate::ui::{AgentListState, ConversationState, ProjectListState, SessionListState, Theme};
 
 /// Maximum number of conversation entries to keep in memory.
 /// When exceeded, oldest entries are dropped.
@@ -16,6 +16,7 @@ const MAX_CONVERSATION_ENTRIES: usize = 10_000;
 pub enum FocusPane {
     Projects,
     Sessions,
+    Agents,
     Conversation,
 }
 
@@ -23,9 +24,11 @@ pub struct App {
     pub focus: FocusPane,
     pub projects: Vec<Project>,
     pub sessions: Vec<Session>,
+    pub agents: Vec<Agent>,
     pub conversation: VecDeque<DisplayEntry>,
     pub project_state: ProjectListState,
     pub session_state: SessionListState,
+    pub agent_state: AgentListState,
     pub conversation_state: ConversationState,
     pub theme: Theme,
     pub watcher: SessionWatcher,
@@ -53,9 +56,11 @@ impl App {
             focus: FocusPane::Projects,
             projects,
             sessions,
+            agents: Vec::new(),
             conversation: VecDeque::new(),
             project_state: ProjectListState::new(),
             session_state: SessionListState::new(),
+            agent_state: AgentListState::new(),
             conversation_state: ConversationState::new(),
             theme,
             watcher: SessionWatcher::new(),
@@ -68,8 +73,9 @@ impl App {
             parse_errors: Vec::new(),
         };
 
-        // Load initial conversation if there's a session
-        app.load_conversation_for_selected_session();
+        // Load initial agents and conversation if there's a session
+        app.load_agents_for_selected_session();
+        app.load_conversation_for_selected_agent();
 
         Ok(app)
     }
@@ -77,7 +83,8 @@ impl App {
     pub fn cycle_focus(&mut self) {
         self.focus = match self.focus {
             FocusPane::Projects => FocusPane::Sessions,
-            FocusPane::Sessions => FocusPane::Conversation,
+            FocusPane::Sessions => FocusPane::Agents,
+            FocusPane::Agents => FocusPane::Conversation,
             FocusPane::Conversation => FocusPane::Projects,
         };
     }
@@ -86,7 +93,8 @@ impl App {
         self.focus = match self.focus {
             FocusPane::Projects => FocusPane::Conversation,
             FocusPane::Sessions => FocusPane::Projects,
-            FocusPane::Conversation => FocusPane::Sessions,
+            FocusPane::Agents => FocusPane::Sessions,
+            FocusPane::Conversation => FocusPane::Agents,
         };
     }
 
@@ -106,14 +114,36 @@ impl App {
                 Ok(sessions) => {
                     self.sessions = sessions;
                     self.session_state = SessionListState::new();
-                    self.load_conversation_for_selected_session();
+                    self.load_agents_for_selected_session();
+                    self.load_conversation_for_selected_agent();
                 }
                 Err(e) => {
                     self.error_message = Some(format!("Failed to load sessions: {}", e));
                     self.sessions.clear();
+                    self.agents.clear();
                     self.conversation.clear();
                 }
             }
+        }
+    }
+
+    pub fn load_agents_for_selected_session(&mut self) {
+        if let Some(idx) = self.session_state.selected()
+            && let Some(session) = self.sessions.get(idx)
+        {
+            match discover_agents(session) {
+                Ok(agents) => {
+                    self.agents = agents;
+                    self.agent_state = AgentListState::new();
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to load agents: {}", e));
+                    self.agents.clear();
+                }
+            }
+        } else {
+            self.agents.clear();
+            self.agent_state = AgentListState::new();
         }
     }
 
@@ -170,19 +200,53 @@ impl App {
                 self.error_message = Some(format!("Failed to refresh sessions: {}", e));
             }
         }
+
+        // Also refresh agents for the selected session
+        self.refresh_agents();
     }
 
-    pub fn load_conversation_for_selected_session(&mut self) {
+    /// Refresh agents list for current session, preserving selection if possible
+    pub fn refresh_agents(&mut self) {
+        let Some(session_idx) = self.session_state.selected() else {
+            return;
+        };
+        let Some(session) = self.sessions.get(session_idx) else {
+            return;
+        };
+
+        let selected_path = self
+            .agent_state
+            .selected()
+            .and_then(|idx| self.agents.get(idx))
+            .map(|a| a.log_path.clone());
+
+        match discover_agents(session) {
+            Ok(agents) => {
+                self.agents = agents;
+                // Restore selection by matching log_path
+                if let Some(path) = selected_path
+                    && let Some(idx) = self.agents.iter().position(|a| a.log_path == path)
+                {
+                    self.agent_state.select(Some(idx));
+                }
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to refresh agents: {}", e));
+            }
+        }
+    }
+
+    pub fn load_conversation_for_selected_agent(&mut self) {
         self.watcher.stop();
         self.entries_truncated = 0;
         self.parse_errors.clear();
 
         // Clone the path early to avoid borrow issues
         let log_path = self
-            .session_state
+            .agent_state
             .selected()
-            .and_then(|idx| self.sessions.get(idx))
-            .map(|session| session.log_path.clone());
+            .and_then(|idx| self.agents.get(idx))
+            .map(|agent| agent.log_path.clone());
 
         if let Some(path) = log_path {
             match parse_jsonl_file(&path) {
@@ -301,6 +365,13 @@ impl App {
             .and_then(|idx| self.sessions.get(idx))
             .map(|s| s.display_name())
     }
+
+    pub fn selected_agent_name(&self) -> Option<&str> {
+        self.agent_state
+            .selected()
+            .and_then(|idx| self.agents.get(idx))
+            .map(|a| a.display_name.as_str())
+    }
 }
 
 impl Default for App {
@@ -310,9 +381,11 @@ impl Default for App {
             focus: FocusPane::Projects,
             projects: Vec::new(),
             sessions: Vec::new(),
+            agents: Vec::new(),
             conversation: VecDeque::new(),
             project_state: ProjectListState::new(),
             session_state: SessionListState::new(),
+            agent_state: AgentListState::new(),
             conversation_state: ConversationState::new(),
             theme: Theme::default(),
             watcher: SessionWatcher::new(),

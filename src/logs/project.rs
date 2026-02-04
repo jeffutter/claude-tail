@@ -1,8 +1,12 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+
+use super::types::Agent;
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -274,4 +278,99 @@ impl Session {
             format!("{} ({})", self.short_id(), timestamp)
         }
     }
+}
+
+/// Discovers all agents for a session.
+/// Returns a list with "Main" agent first, followed by sub-agents sorted by most recent activity.
+pub fn discover_agents(session: &Session) -> Result<Vec<Agent>> {
+    let mut agents = Vec::new();
+
+    // Always include the main agent from the session's log file
+    let main_modified = std::fs::metadata(&session.log_path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    agents.push(Agent {
+        id: "main".to_string(),
+        display_name: "Main".to_string(),
+        log_path: session.log_path.clone(),
+        last_modified: main_modified,
+        is_main: true,
+    });
+
+    // Check for subagents directory: {session_id}/subagents/
+    let subagents_dir = session.project_path.join(&session.id).join("subagents");
+
+    if subagents_dir.is_dir() {
+        for entry in std::fs::read_dir(&subagents_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Look for agent-*.jsonl files
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Some(filename) = path.file_stem().and_then(|s| s.to_str())
+                && let Some(agent_info) = parse_agent_filename(filename)
+            {
+                let modified = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                agents.push(Agent {
+                    id: agent_info.id,
+                    display_name: agent_info.display_name,
+                    log_path: path,
+                    last_modified: modified,
+                    is_main: false,
+                });
+            }
+        }
+    }
+
+    // Sort: Main first (already at index 0), then sub-agents by last_modified (newest first)
+    if agents.len() > 1 {
+        agents[1..].sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    }
+
+    Ok(agents)
+}
+
+struct AgentInfo {
+    id: String,
+    display_name: String,
+}
+
+/// Parses agent filename to extract ID and display name.
+/// Supports formats like:
+/// - "agent-a356e17" -> id: "a356e17", display: "a356e17"
+/// - "agent-Explore-a356e17" -> id: "a356e17", display: "Explore"
+fn parse_agent_filename(filename: &str) -> Option<AgentInfo> {
+    if !filename.starts_with("agent-") {
+        return None;
+    }
+
+    let rest = &filename[6..]; // Skip "agent-"
+
+    // Check if there's a type prefix (e.g., "Explore-a356e17")
+    if let Some(dash_pos) = rest.rfind('-') {
+        let potential_type = &rest[..dash_pos];
+        let id = &rest[dash_pos + 1..];
+
+        // If the prefix looks like a type (contains letters and isn't just the ID)
+        if !potential_type.is_empty()
+            && potential_type.chars().any(|c| c.is_alphabetic())
+            && !id.is_empty()
+        {
+            return Some(AgentInfo {
+                id: id.to_string(),
+                display_name: potential_type.to_string(),
+            });
+        }
+    }
+
+    // No type prefix, just "agent-{id}"
+    Some(AgentInfo {
+        id: rest.to_string(),
+        display_name: rest.to_string(),
+    })
 }

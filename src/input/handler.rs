@@ -44,6 +44,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> Action {
     match app.focus {
         FocusPane::Projects => handle_projects_input(app, key),
         FocusPane::Sessions => handle_sessions_input(app, key),
+        FocusPane::Agents => handle_agents_input(app, key),
         FocusPane::Conversation => handle_conversation_input(app, key),
     }
 }
@@ -82,22 +83,56 @@ fn handle_sessions_input(app: &mut App, key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             app.session_state.next(app.sessions.len());
-            app.load_conversation_for_selected_session();
+            app.load_agents_for_selected_session();
+            app.load_conversation_for_selected_agent();
             Action::Redraw
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.session_state.previous(app.sessions.len());
-            app.load_conversation_for_selected_session();
+            app.load_agents_for_selected_session();
+            app.load_conversation_for_selected_agent();
             Action::Redraw
         }
         KeyCode::Char('g') => {
             app.session_state.first();
-            app.load_conversation_for_selected_session();
+            app.load_agents_for_selected_session();
+            app.load_conversation_for_selected_agent();
             Action::Redraw
         }
         KeyCode::Char('G') => {
             app.session_state.last(app.sessions.len());
-            app.load_conversation_for_selected_session();
+            app.load_agents_for_selected_session();
+            app.load_conversation_for_selected_agent();
+            Action::Redraw
+        }
+        KeyCode::Enter => {
+            app.focus = FocusPane::Agents;
+            Action::Redraw
+        }
+        _ => Action::None,
+    }
+}
+
+fn handle_agents_input(app: &mut App, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.agent_state.next(app.agents.len());
+            app.load_conversation_for_selected_agent();
+            Action::Redraw
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.agent_state.previous(app.agents.len());
+            app.load_conversation_for_selected_agent();
+            Action::Redraw
+        }
+        KeyCode::Char('g') => {
+            app.agent_state.first();
+            app.load_conversation_for_selected_agent();
+            Action::Redraw
+        }
+        KeyCode::Char('G') => {
+            app.agent_state.last(app.agents.len());
+            app.load_conversation_for_selected_agent();
             Action::Redraw
         }
         KeyCode::Enter => {

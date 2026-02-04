@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,5 +136,36 @@ impl DisplayEntry {
             DisplayEntry::HookEvent { timestamp, .. } => *timestamp,
             DisplayEntry::AgentSpawn { timestamp, .. } => *timestamp,
         }
+    }
+}
+
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+/// Represents an agent (main or sub-agent) within a session
+#[derive(Debug, Clone)]
+pub struct Agent {
+    /// Agent ID: "main" for the main agent, or the agent ID like "a356e17"
+    pub id: String,
+    /// Display name: "Main" for main agent, or extracted from filename/type
+    pub display_name: String,
+    /// Path to the agent's JSONL log file
+    pub log_path: PathBuf,
+    /// Last modification time of the log file
+    pub last_modified: SystemTime,
+    /// True for the main agent (pinned at top of list)
+    pub is_main: bool,
+}
+
+impl Agent {
+    /// Returns the timestamp formatted as HH:MM:SS
+    pub fn timestamp_str(&self) -> String {
+        let datetime: DateTime<Local> = self.last_modified.into();
+        datetime.format("%H:%M:%S").to_string()
+    }
+
+    /// Returns display string with timestamp: "name (HH:MM:SS)"
+    pub fn display_with_timestamp(&self) -> String {
+        format!("{} ({})", self.display_name, self.timestamp_str())
     }
 }
