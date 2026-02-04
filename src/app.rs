@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use crate::logs::{
-    discover_projects, discover_sessions, parse_jsonl_file, DisplayEntry, Project, Session,
-    SessionWatcher,
+    discover_projects, discover_sessions, merge_tool_results, parse_jsonl_file, DisplayEntry,
+    Project, Session, SessionWatcher,
 };
 use crate::ui::{ConversationState, ProjectListState, SessionListState, Theme};
 
@@ -167,7 +167,7 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match parse_jsonl_file(&session.log_path) {
                     Ok(entries) => {
-                        self.conversation = entries;
+                        self.conversation = merge_tool_results(entries);
                         self.conversation_state = ConversationState::new();
                         self.error_message = None;
 
@@ -194,7 +194,37 @@ impl App {
                 Ok((new_entries, new_pos)) => {
                     self.watcher.set_file_position(new_pos);
                     if !new_entries.is_empty() {
-                        self.conversation.extend(new_entries);
+                        // Merge new entries (handles results within the new batch)
+                        let merged_new = merge_tool_results(new_entries);
+
+                        // Check if last existing entry is a ToolCall that needs its result
+                        // merged from the first new entry
+                        if let Some(last) = self.conversation.last_mut() {
+                            if let DisplayEntry::ToolCall { id, result, .. } = last {
+                                if result.is_none() {
+                                    if let Some(DisplayEntry::ToolResult {
+                                        tool_use_id,
+                                        content,
+                                        is_error,
+                                        ..
+                                    }) = merged_new.first()
+                                    {
+                                        if tool_use_id == id {
+                                            // Merge the result into the existing ToolCall
+                                            *result = Some(crate::logs::ToolCallResult {
+                                                content: content.clone(),
+                                                is_error: *is_error,
+                                            });
+                                            // Skip the first entry since we merged it
+                                            self.conversation.extend(merged_new.into_iter().skip(1));
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        self.conversation.extend(merged_new);
                     }
                 }
                 Err(e) => {

@@ -7,7 +7,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use super::styles::Theme;
-use crate::logs::DisplayEntry;
+use crate::logs::{DisplayEntry, ToolCallResult};
 
 pub struct ConversationView<'a> {
     entries: &'a [DisplayEntry],
@@ -34,7 +34,14 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_tool_call(&self, lines: &mut Vec<Line<'a>>, name: &str, input: &str, content_width: usize) {
+    fn render_tool_call(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        name: &str,
+        input: &str,
+        result: Option<&ToolCallResult>,
+        content_width: usize,
+    ) {
         // Parse the JSON input to extract relevant fields
         let parsed: Option<serde_json::Value> = serde_json::from_str(input).ok();
 
@@ -47,6 +54,58 @@ impl<'a> ConversationView<'a> {
             "Glob" => self.render_glob_tool(lines, parsed.as_ref(), content_width),
             "Task" => self.render_task_tool(lines, parsed.as_ref(), content_width),
             _ => self.render_generic_tool(lines, name, input, content_width),
+        }
+
+        // Render inline result if present
+        if let Some(res) = result {
+            self.render_inline_result(lines, res, content_width);
+        }
+    }
+
+    fn render_inline_result(&self, lines: &mut Vec<Line<'a>>, result: &ToolCallResult, content_width: usize) {
+        if !self.expand_tools {
+            // Show collapsed indicator
+            let style = if result.is_error {
+                self.theme.tool_error
+            } else {
+                self.theme.tool_result
+            };
+            let label = if result.is_error { "Error" } else { "OK" };
+            lines.push(Line::from(Span::styled(format!("  → [{}]", label), style)));
+            return;
+        }
+
+        // Separator line
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "─".repeat(content_width.saturating_sub(4).min(40))),
+            self.theme.border,
+        )));
+
+        let style = if result.is_error {
+            self.theme.tool_error
+        } else {
+            self.theme.tool_result
+        };
+
+        if result.content.is_empty() {
+            let label = if result.is_error { "[Error: no output]" } else { "[OK]" };
+            lines.push(Line::from(Span::styled(format!("  {}", label), style)));
+        } else {
+            // Truncate very long results (respecting char boundaries)
+            let display_content = if result.content.len() > 500 {
+                let truncate_at = result.content
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 500)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                format!("{}...", &result.content[..truncate_at])
+            } else {
+                result.content.clone()
+            };
+            for line in wrap_text(&display_content, content_width.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(format!("  {}", line), style)));
+            }
         }
     }
 
@@ -321,9 +380,15 @@ impl<'a> ConversationView<'a> {
 
         // Show prompt when expanded
         if self.expand_tools && !prompt.is_empty() {
-            // Truncate long prompts
+            // Truncate long prompts (respecting char boundaries)
             let display_prompt = if prompt.len() > 300 {
-                format!("{}...", &prompt[..300])
+                let truncate_at = prompt
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 300)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                format!("{}...", &prompt[..truncate_at])
             } else {
                 prompt
             };
@@ -383,8 +448,8 @@ impl<'a> ConversationView<'a> {
                     }
                     lines.push(Line::from(""));
                 }
-                DisplayEntry::ToolCall { name, input, .. } => {
-                    self.render_tool_call(&mut lines, name, input, content_width);
+                DisplayEntry::ToolCall { name, input, result, .. } => {
+                    self.render_tool_call(&mut lines, name, input, result.as_ref(), content_width);
                     lines.push(Line::from(""));
                 }
                 DisplayEntry::ToolResult {
@@ -400,9 +465,15 @@ impl<'a> ConversationView<'a> {
                         style,
                     )));
                     if self.expand_tools && !content.is_empty() {
-                        // Truncate very long results
+                        // Truncate very long results (respecting char boundaries)
                         let display_content = if content.len() > 500 {
-                            format!("{}...", &content[..500])
+                            let truncate_at = content
+                                .char_indices()
+                                .take_while(|(i, _)| *i < 500)
+                                .last()
+                                .map(|(i, c)| i + c.len_utf8())
+                                .unwrap_or(0);
+                            format!("{}...", &content[..truncate_at])
                         } else {
                             content.clone()
                         };
@@ -435,16 +506,48 @@ impl<'a> ConversationView<'a> {
                         )));
                     }
                 }
-                DisplayEntry::HookEvent { event, details, .. } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("Hook: ", self.theme.hook_event),
-                        Span::styled(event.clone(), self.theme.hook_event),
-                    ]));
-                    if !details.is_empty() {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}", details),
-                            self.theme.hook_event,
-                        )));
+                DisplayEntry::HookEvent {
+                    event,
+                    hook_name,
+                    command,
+                    ..
+                } => {
+                    // Extract tool name from hook_name if present (e.g., "PostToolUse:Read" -> "Read")
+                    let tool_info = hook_name.as_ref().and_then(|name| {
+                        name.split(':').nth(1).map(|s| s.to_string())
+                    });
+
+                    // Build the header line
+                    let header = if let Some(tool) = &tool_info {
+                        format!("Hook: {} ({})", event, tool)
+                    } else {
+                        format!("Hook: {}", event)
+                    };
+
+                    lines.push(Line::from(Span::styled(header, self.theme.hook_event)));
+
+                    // Show command if expanded and it's a real command (not just "callback")
+                    if self.expand_tools {
+                        if let Some(cmd) = command {
+                            if cmd != "callback" {
+                                // Abbreviate long commands (respecting char boundaries)
+                                let display_cmd = if cmd.len() > 60 {
+                                    let truncate_at = cmd
+                                        .char_indices()
+                                        .take_while(|(i, _)| *i < 57)
+                                        .last()
+                                        .map(|(i, c)| i + c.len_utf8())
+                                        .unwrap_or(0);
+                                    format!("{}...", &cmd[..truncate_at])
+                                } else {
+                                    cmd.clone()
+                                };
+                                lines.push(Line::from(Span::styled(
+                                    format!("  → {}", display_cmd),
+                                    self.theme.hook_event,
+                                )));
+                            }
+                        }
                     }
                     lines.push(Line::from(""));
                 }
@@ -490,7 +593,15 @@ impl<'a> StatefulWidget for ConversationView<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let lines = self.render_entries(inner.width as usize);
+        // Add horizontal padding
+        let padded = Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: inner.height,
+        };
+
+        let lines = self.render_entries(padded.width as usize);
         let total_lines = lines.len();
 
         // Update state with total lines for scrollbar
@@ -512,7 +623,7 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             .collect();
 
         let paragraph = Paragraph::new(Text::from(visible_lines));
-        paragraph.render(inner, buf);
+        paragraph.render(padded, buf);
 
         // Render scrollbar
         if total_lines > inner.height as usize {

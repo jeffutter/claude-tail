@@ -76,6 +76,13 @@ pub struct ToolResultBlock {
     pub text: Option<String>,
 }
 
+/// Embedded result for a tool call (merged from a subsequent ToolResult entry)
+#[derive(Debug, Clone)]
+pub struct ToolCallResult {
+    pub content: String,
+    pub is_error: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum DisplayEntry {
     UserMessage {
@@ -91,6 +98,8 @@ pub enum DisplayEntry {
         input: String,
         id: String,
         timestamp: Option<DateTime<Utc>>,
+        /// Result merged from a following ToolResult entry
+        result: Option<ToolCallResult>,
     },
     ToolResult {
         tool_use_id: String,
@@ -105,7 +114,8 @@ pub enum DisplayEntry {
     },
     HookEvent {
         event: String,
-        details: String,
+        hook_name: Option<String>,
+        command: Option<String>,
         timestamp: Option<DateTime<Utc>>,
     },
     AgentSpawn {

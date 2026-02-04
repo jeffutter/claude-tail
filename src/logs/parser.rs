@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use super::types::{ContentBlock, ContentValue, DisplayEntry, LogEntry, ToolResultContent};
+use super::types::{ContentBlock, ContentValue, DisplayEntry, LogEntry, ToolCallResult, ToolResultContent};
 
 pub fn parse_jsonl_file(path: &Path) -> Result<Vec<DisplayEntry>> {
     let file = std::fs::File::open(path)?;
@@ -179,14 +179,18 @@ fn parse_progress_data(
 
     // Check for hook events
     if let Some(hook_event) = data.get("hookEvent").and_then(|h| h.as_str()) {
-        let details = data
-            .get("hookDetails")
-            .and_then(|d| d.as_str())
-            .unwrap_or("")
-            .to_string();
+        let hook_name = data
+            .get("hookName")
+            .and_then(|h| h.as_str())
+            .map(|s| s.to_string());
+        let command = data
+            .get("command")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string());
         entries.push(DisplayEntry::HookEvent {
             event: hook_event.to_string(),
-            details,
+            hook_name,
+            command,
             timestamp,
         });
     }
@@ -264,6 +268,7 @@ fn parse_content_blocks(
                             input,
                             id,
                             timestamp,
+                            result: None,
                         });
                     }
                     "tool_result" => {
@@ -322,6 +327,7 @@ fn parse_content_blocks_vec(
                     input: serde_json::to_string_pretty(input).unwrap_or_default(),
                     id: id.clone(),
                     timestamp,
+                    result: None,
                 });
             }
             ContentBlock::ToolResult {
@@ -376,4 +382,53 @@ fn extract_tool_result_content(content: Option<&serde_json::Value>) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Merge ToolResult entries into their preceding ToolCall entries when they match by ID.
+/// This creates a cleaner display where results appear inline with their commands.
+/// Results that don't immediately follow their call are kept separate.
+pub fn merge_tool_results(entries: Vec<DisplayEntry>) -> Vec<DisplayEntry> {
+    let mut result = Vec::with_capacity(entries.len());
+    let mut skip_next = false;
+
+    for (i, entry) in entries.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        match entry {
+            DisplayEntry::ToolCall { id, name, input, timestamp, result: _ } => {
+                // Look ahead for a matching ToolResult
+                let merged_result = entries.get(i + 1).and_then(|next| {
+                    if let DisplayEntry::ToolResult { tool_use_id, content, is_error, .. } = next {
+                        if tool_use_id == id {
+                            skip_next = true;
+                            Some(ToolCallResult {
+                                content: content.clone(),
+                                is_error: *is_error,
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                result.push(DisplayEntry::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                    timestamp: *timestamp,
+                    result: merged_result,
+                });
+            }
+            _ => {
+                result.push(entry.clone());
+            }
+        }
+    }
+
+    result
 }

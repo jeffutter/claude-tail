@@ -247,9 +247,15 @@ impl Session {
     pub fn display_name(&self) -> String {
         let timestamp = self.timestamp_str();
         if let Some(ref summary) = self.summary {
-            // Truncate long summaries
+            // Truncate long summaries (respecting char boundaries)
             if summary.len() > 40 {
-                format!("{}... ({})", &summary[..37], timestamp)
+                let truncate_at = summary
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 37)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(summary.len());
+                format!("{}... ({})", &summary[..truncate_at], timestamp)
             } else {
                 format!("{} ({})", summary, timestamp)
             }
