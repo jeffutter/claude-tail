@@ -33,6 +33,7 @@
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
+            vhs
             rustToolchain
             pkg-config
           ];

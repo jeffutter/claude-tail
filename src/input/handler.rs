@@ -37,6 +37,11 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> Action {
             app.show_help = !app.show_help;
             return Action::Redraw;
         }
+        KeyCode::Char('r') => {
+            app.refresh_projects();
+            app.refresh_sessions();
+            return Action::Redraw;
+        }
         _ => {}
     }
 

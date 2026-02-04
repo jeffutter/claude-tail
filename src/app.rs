@@ -157,12 +157,20 @@ impl App {
 
         match discover_projects() {
             Ok(projects) => {
+                let was_empty = self.projects.is_empty();
                 self.projects = projects;
-                // Restore selection by matching path
+                // Restore selection by matching path, or select first if we had no valid selection
                 if let Some(path) = selected_path
                     && let Some(idx) = self.projects.iter().position(|p| p.path == path)
                 {
                     self.project_state.select(Some(idx));
+                } else if !self.projects.is_empty() {
+                    // No previous selection or it's gone - select first item
+                    self.project_state.select(Some(0));
+                    // If we just got projects after being empty, load sessions too
+                    if was_empty {
+                        self.load_sessions_for_selected_project();
+                    }
                 }
             }
             Err(e) => {
@@ -188,12 +196,20 @@ impl App {
 
         match discover_sessions(project) {
             Ok(sessions) => {
+                let was_empty = self.sessions.is_empty();
                 self.sessions = sessions;
-                // Restore selection by matching log_path
+                // Restore selection by matching log_path, or select first if no valid selection
                 if let Some(path) = selected_path
                     && let Some(idx) = self.sessions.iter().position(|s| s.log_path == path)
                 {
                     self.session_state.select(Some(idx));
+                } else if !self.sessions.is_empty() {
+                    // No previous selection or it's gone - select first item
+                    self.session_state.select(Some(0));
+                    // If we just got sessions after being empty, load agents too
+                    if was_empty {
+                        self.load_agents_for_selected_session();
+                    }
                 }
             }
             Err(e) => {
@@ -222,12 +238,20 @@ impl App {
 
         match discover_agents(session) {
             Ok(agents) => {
+                let was_empty = self.agents.is_empty();
                 self.agents = agents;
-                // Restore selection by matching log_path
+                // Restore selection by matching log_path, or select first if no valid selection
                 if let Some(path) = selected_path
                     && let Some(idx) = self.agents.iter().position(|a| a.log_path == path)
                 {
                     self.agent_state.select(Some(idx));
+                } else if !self.agents.is_empty() {
+                    // No previous selection or it's gone - select first item
+                    self.agent_state.select(Some(0));
+                    // If we just got agents after being empty, load conversation too
+                    if was_empty {
+                        self.load_conversation_for_selected_agent();
+                    }
                 }
             }
             Err(e) => {
