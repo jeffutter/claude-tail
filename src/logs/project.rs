@@ -15,34 +15,54 @@ pub struct Project {
 impl Project {
     /// Returns an abbreviated path like `~/s/c/my-project`
     pub fn abbreviated_path(&self) -> String {
-        let home = dirs::home_dir();
         let path_str = self.original_path.to_string_lossy();
 
-        // Replace home directory with ~
-        let path_str = if let Some(ref home) = home {
-            let home_str = home.to_string_lossy();
-            if path_str.starts_with(home_str.as_ref()) {
-                format!("~{}", &path_str[home_str.len()..])
+        let home = dirs::home_dir();
+        let home_str = home.as_ref()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Make path relative to home
+        let relative_path = if !home_str.is_empty() && path_str.starts_with(&home_str) {
+            // Direct match - path starts with home directory
+            format!("~{}", &path_str[home_str.len()..])
+        } else if !home_str.is_empty() && (path_str.starts_with("/Users/") || path_str.starts_with("/home/")) {
+            // Home directory might be split due to encoding (e.g., jeffery.utter -> jeffery/utter)
+            // Count components in actual home, then skip that many "encoded" components
+            // accounting for dots that became extra path separators
+            let home_parts: Vec<&str> = home_str.split('/').filter(|s| !s.is_empty()).collect();
+            let path_parts: Vec<&str> = path_str.split('/').filter(|s| !s.is_empty()).collect();
+
+            // Count how many dots are in the home path (each becomes an extra separator when encoded)
+            let extra_separators: usize = home_parts.iter().map(|p| p.matches('.').count()).sum();
+            let home_encoded_components = home_parts.len() + extra_separators;
+
+            // Skip that many components from the path
+            if path_parts.len() > home_encoded_components {
+                let remaining: Vec<&str> = path_parts.into_iter().skip(home_encoded_components).collect();
+                format!("~/{}", remaining.join("/"))
             } else {
-                path_str.to_string()
+                "~".to_string()
             }
         } else {
             path_str.to_string()
         };
 
-        // Abbreviate all components except the last one
-        let parts: Vec<&str> = path_str.split('/').collect();
+        // Abbreviate intermediate components (keep first ~ and last component full)
+        let parts: Vec<&str> = relative_path.split('/').collect();
         if parts.len() <= 2 {
-            return path_str;
+            return relative_path;
         }
 
         let abbreviated: Vec<String> = parts
             .iter()
             .enumerate()
             .map(|(i, part)| {
-                if i == parts.len() - 1 || part.is_empty() || *part == "~" {
+                if i == 0 || i == parts.len() - 1 || part.is_empty() {
+                    // Keep ~ (first), last component, and empty parts as-is
                     part.to_string()
                 } else {
+                    // Abbreviate intermediate components
                     part.chars().next().map(|c| c.to_string()).unwrap_or_default()
                 }
             })
@@ -62,12 +82,18 @@ pub struct Session {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SessionsIndex {
-    sessions: HashMap<String, SessionEntry>,
+    #[serde(default)]
+    original_path: Option<String>,
+    #[serde(default)]
+    entries: Vec<SessionIndexEntry>,
 }
 
 #[derive(Debug, Deserialize)]
-struct SessionEntry {
+#[serde(rename_all = "camelCase")]
+struct SessionIndexEntry {
+    session_id: String,
     #[serde(default)]
     summary: Option<String>,
 }
@@ -96,7 +122,20 @@ pub fn discover_projects() -> Result<Vec<Project>> {
                 .unwrap_or("")
                 .to_string();
 
-            let (name, original_path) = decode_project_path(&encoded_path);
+            // Try to get the original path from sessions-index.json
+            let sessions_index_path = path.join("sessions-index.json");
+            let original_path = load_original_path(&sessions_index_path)
+                .unwrap_or_else(|| {
+                    // Fallback to decoding if sessions-index.json doesn't have it
+                    let (_, decoded) = decode_project_path(&encoded_path);
+                    decoded
+                });
+
+            let name = original_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&encoded_path)
+                .to_string();
 
             projects.push(Project {
                 name,
@@ -109,6 +148,13 @@ pub fn discover_projects() -> Result<Vec<Project>> {
 
     projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(projects)
+}
+
+/// Loads the original path from sessions-index.json if available
+fn load_original_path(sessions_index_path: &Path) -> Option<PathBuf> {
+    let content = std::fs::read_to_string(sessions_index_path).ok()?;
+    let index: SessionsIndex = serde_json::from_str(&content).ok()?;
+    index.original_path.map(PathBuf::from)
 }
 
 /// Decodes the encoded project path and returns (name, original_path)
@@ -172,8 +218,8 @@ fn load_session_summaries(path: &Path) -> HashMap<String, Option<String>> {
 
     if let Ok(content) = std::fs::read_to_string(path) {
         if let Ok(index) = serde_json::from_str::<SessionsIndex>(&content) {
-            for (id, entry) in index.sessions {
-                summaries.insert(id, entry.summary);
+            for entry in index.entries {
+                summaries.insert(entry.session_id, entry.summary);
             }
         }
     }

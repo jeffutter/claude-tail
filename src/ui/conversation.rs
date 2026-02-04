@@ -34,6 +34,280 @@ impl<'a> ConversationView<'a> {
         }
     }
 
+    fn render_tool_call(&self, lines: &mut Vec<Line<'a>>, name: &str, input: &str, content_width: usize) {
+        // Parse the JSON input to extract relevant fields
+        let parsed: Option<serde_json::Value> = serde_json::from_str(input).ok();
+
+        match name {
+            "Bash" => self.render_bash_tool(lines, parsed.as_ref(), content_width),
+            "Read" => self.render_read_tool(lines, parsed.as_ref(), content_width),
+            "Write" => self.render_write_tool(lines, parsed.as_ref(), content_width),
+            "Edit" => self.render_edit_tool(lines, parsed.as_ref(), content_width),
+            "Grep" => self.render_grep_tool(lines, parsed.as_ref(), content_width),
+            "Glob" => self.render_glob_tool(lines, parsed.as_ref(), content_width),
+            _ => self.render_generic_tool(lines, name, input, content_width),
+        }
+    }
+
+    fn render_bash_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+        let command = parsed
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let description = parsed
+            .and_then(|v| v.get("description"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Header with description if available
+        if let Some(desc) = description {
+            lines.push(Line::from(vec![
+                Span::styled("$ ", self.theme.tool_name),
+                Span::styled(desc, self.theme.tool_name),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled("$ Bash", self.theme.tool_name)));
+        }
+
+        // Command with syntax highlighting style
+        if self.expand_tools && !command.is_empty() {
+            for line in wrap_text(&command, content_width.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    self.theme.tool_input,
+                )));
+            }
+        }
+    }
+
+    fn render_read_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, _content_width: usize) {
+        let file_path = parsed
+            .and_then(|v| v.get("file_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+
+        // Abbreviate the path for display
+        let display_path = abbreviate_path(&file_path);
+
+        lines.push(Line::from(vec![
+            Span::styled("Read: ", self.theme.tool_name),
+            Span::styled(display_path, self.theme.tool_input),
+        ]));
+
+        // Show offset/limit if present
+        if self.expand_tools {
+            let offset = parsed.and_then(|v| v.get("offset")).and_then(|v| v.as_u64());
+            let limit = parsed.and_then(|v| v.get("limit")).and_then(|v| v.as_u64());
+
+            if offset.is_some() || limit.is_some() {
+                let mut range_parts = Vec::new();
+                if let Some(off) = offset {
+                    range_parts.push(format!("offset: {}", off));
+                }
+                if let Some(lim) = limit {
+                    range_parts.push(format!("limit: {}", lim));
+                }
+                lines.push(Line::from(Span::styled(
+                    format!("  [{}]", range_parts.join(", ")),
+                    self.theme.tool_input,
+                )));
+            }
+        }
+    }
+
+    fn render_write_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+        let file_path = parsed
+            .and_then(|v| v.get("file_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let content = parsed
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Abbreviate the path for display
+        let display_path = abbreviate_path(&file_path);
+
+        // Count lines in content
+        let line_count = content.lines().count();
+
+        lines.push(Line::from(vec![
+            Span::styled("Write: ", self.theme.tool_name),
+            Span::styled(display_path, self.theme.tool_input),
+            Span::styled(format!(" ({} lines)", line_count), self.theme.thinking_collapsed),
+        ]));
+
+        // Show preview of content
+        if self.expand_tools && !content.is_empty() {
+            let preview_lines: Vec<&str> = content.lines().take(5).collect();
+            for line in &preview_lines {
+                let truncated = if line.len() > content_width.saturating_sub(4) {
+                    format!("{}…", &line[..content_width.saturating_sub(5)])
+                } else {
+                    line.to_string()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("  │ {}", truncated),
+                    self.theme.tool_input,
+                )));
+            }
+            if line_count > 5 {
+                lines.push(Line::from(Span::styled(
+                    format!("  │ ... ({} more lines)", line_count - 5),
+                    self.theme.thinking_collapsed,
+                )));
+            }
+        }
+    }
+
+    fn render_edit_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+        let file_path = parsed
+            .and_then(|v| v.get("file_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let old_string = parsed
+            .and_then(|v| v.get("old_string"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let new_string = parsed
+            .and_then(|v| v.get("new_string"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Abbreviate the path for display
+        let display_path = abbreviate_path(&file_path);
+
+        lines.push(Line::from(vec![
+            Span::styled("Edit: ", self.theme.tool_name),
+            Span::styled(display_path, self.theme.tool_input),
+        ]));
+
+        if self.expand_tools {
+            // Show old string (what's being replaced)
+            if !old_string.is_empty() {
+                let old_preview: Vec<&str> = old_string.lines().take(3).collect();
+                lines.push(Line::from(Span::styled("  - old:", self.theme.tool_error)));
+                for line in old_preview {
+                    let truncated = truncate_line(line, content_width.saturating_sub(6));
+                    lines.push(Line::from(Span::styled(
+                        format!("    {}", truncated),
+                        self.theme.tool_error,
+                    )));
+                }
+                if old_string.lines().count() > 3 {
+                    lines.push(Line::from(Span::styled(
+                        format!("    ... ({} more lines)", old_string.lines().count() - 3),
+                        self.theme.thinking_collapsed,
+                    )));
+                }
+            }
+
+            // Show new string (the replacement)
+            if !new_string.is_empty() {
+                let new_preview: Vec<&str> = new_string.lines().take(3).collect();
+                lines.push(Line::from(Span::styled("  + new:", self.theme.tool_result)));
+                for line in new_preview {
+                    let truncated = truncate_line(line, content_width.saturating_sub(6));
+                    lines.push(Line::from(Span::styled(
+                        format!("    {}", truncated),
+                        self.theme.tool_result,
+                    )));
+                }
+                if new_string.lines().count() > 3 {
+                    lines.push(Line::from(Span::styled(
+                        format!("    ... ({} more lines)", new_string.lines().count() - 3),
+                        self.theme.thinking_collapsed,
+                    )));
+                }
+            }
+        }
+    }
+
+    fn render_grep_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, _content_width: usize) {
+        let pattern = parsed
+            .and_then(|v| v.get("pattern"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let path = parsed
+            .and_then(|v| v.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|s| abbreviate_path(s));
+        let glob = parsed
+            .and_then(|v| v.get("glob"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        lines.push(Line::from(vec![
+            Span::styled("Grep: ", self.theme.tool_name),
+            Span::styled(format!("/{}/", pattern), self.theme.tool_input),
+        ]));
+
+        if self.expand_tools {
+            let mut details = Vec::new();
+            if let Some(p) = path {
+                details.push(format!("in {}", p));
+            }
+            if let Some(g) = glob {
+                details.push(format!("glob: {}", g));
+            }
+            if !details.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  [{}]", details.join(", ")),
+                    self.theme.thinking_collapsed,
+                )));
+            }
+        }
+    }
+
+    fn render_glob_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, _content_width: usize) {
+        let pattern = parsed
+            .and_then(|v| v.get("pattern"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let path = parsed
+            .and_then(|v| v.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|s| abbreviate_path(s));
+
+        lines.push(Line::from(vec![
+            Span::styled("Glob: ", self.theme.tool_name),
+            Span::styled(pattern, self.theme.tool_input),
+        ]));
+
+        if self.expand_tools {
+            if let Some(p) = path {
+                lines.push(Line::from(Span::styled(
+                    format!("  [in {}]", p),
+                    self.theme.thinking_collapsed,
+                )));
+            }
+        }
+    }
+
+    fn render_generic_tool(&self, lines: &mut Vec<Line<'a>>, name: &str, input: &str, content_width: usize) {
+        lines.push(Line::from(vec![
+            Span::styled("Tool: ", self.theme.tool_name),
+            Span::styled(name.to_string(), self.theme.tool_name),
+        ]));
+        if self.expand_tools && !input.is_empty() {
+            for line in wrap_text(input, content_width) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    self.theme.tool_input,
+                )));
+            }
+        }
+    }
+
     fn render_entries(&self, width: usize) -> Vec<Line<'a>> {
         let mut lines = Vec::new();
         let content_width = width.saturating_sub(4); // Account for borders and padding
@@ -67,18 +341,7 @@ impl<'a> ConversationView<'a> {
                     lines.push(Line::from(""));
                 }
                 DisplayEntry::ToolCall { name, input, .. } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("Tool: ", self.theme.tool_name),
-                        Span::styled(name.clone(), self.theme.tool_name),
-                    ]));
-                    if self.expand_tools && !input.is_empty() {
-                        for line in wrap_text(input, content_width) {
-                            lines.push(Line::from(Span::styled(
-                                format!("  {}", line),
-                                self.theme.tool_input,
-                            )));
-                        }
-                    }
+                    self.render_tool_call(&mut lines, name, input, content_width);
                     lines.push(Line::from(""));
                 }
                 DisplayEntry::ToolResult {
@@ -230,6 +493,50 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             );
         }
     }
+}
+
+/// Truncates a line to fit within a given width, adding ellipsis if needed
+fn truncate_line(line: &str, max_width: usize) -> String {
+    if line.len() <= max_width {
+        line.to_string()
+    } else if max_width > 1 {
+        format!("{}…", &line[..max_width - 1])
+    } else {
+        "…".to_string()
+    }
+}
+
+/// Abbreviates a file path for display (e.g., ~/s/c/project/src/main.rs)
+fn abbreviate_path(path: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // Replace home directory with ~
+    let path = if !home.is_empty() && path.starts_with(&home) {
+        format!("~{}", &path[home.len()..])
+    } else {
+        path.to_string()
+    };
+
+    // Abbreviate directory components, keeping the last 2 full
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() <= 3 {
+        return path;
+    }
+
+    let abbreviated: Vec<String> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            // Keep first (~ or empty for root), last two components, and abbreviate the rest
+            if i == 0 || i >= parts.len() - 2 || part.is_empty() {
+                part.to_string()
+            } else {
+                part.chars().next().map(|c| c.to_string()).unwrap_or_default()
+            }
+        })
+        .collect();
+
+    abbreviated.join("/")
 }
 
 fn wrap_text(text: &str, width: usize) -> Vec<String> {

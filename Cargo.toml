@@ -16,3 +16,7 @@ dirs = "6.0"
 anyhow = "1.0"
 thiserror = "2.0"
 unicode-width = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1

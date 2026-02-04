@@ -169,16 +169,24 @@ fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let title = format!(
-        " claude-tail | {} > {} ",
-        app.selected_project_name().unwrap_or(""),
-        app.selected_session_name().unwrap_or_default()
-    );
+    let project_path = app.selected_project_path().unwrap_or_default();
+    let session_name = app.selected_session_name().unwrap_or_default();
 
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(title, app.theme.title_focused),
-    ]));
+    let mut spans = vec![
+        Span::styled(" claude-tail ", app.theme.title_focused),
+        Span::styled("│ ", app.theme.border),
+    ];
 
+    if !project_path.is_empty() {
+        spans.push(Span::styled(project_path, app.theme.tool_input));
+    }
+
+    if !session_name.is_empty() {
+        spans.push(Span::styled(" > ", app.theme.border));
+        spans.push(Span::styled(session_name, app.theme.assistant_text));
+    }
+
+    let header = Paragraph::new(Line::from(spans));
     frame.render_widget(header, area);
 }
 
