@@ -31,7 +31,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(theme: Theme) -> Result<Self> {
         let projects = discover_projects().unwrap_or_default();
         let sessions = if !projects.is_empty() {
             discover_sessions(&projects[0]).unwrap_or_default()
@@ -47,7 +47,7 @@ impl App {
             project_state: ProjectListState::new(),
             session_state: SessionListState::new(),
             conversation_state: ConversationState::new(),
-            theme: Theme::new(),
+            theme,
             watcher: SessionWatcher::new(),
             show_thinking: false,
             expand_tools: true,
@@ -267,6 +267,6 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        Self::new().expect("Failed to create App")
+        Self::new(Theme::default()).expect("Failed to create App")
     }
 }

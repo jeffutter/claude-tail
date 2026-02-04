@@ -3,12 +3,14 @@
 mod app;
 mod input;
 mod logs;
+mod themes;
 mod ui;
 
 use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
+use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
@@ -26,8 +28,41 @@ use app::App;
 use input::{handle_key_event, Action};
 use ui::{AppLayout, ConversationView, FocusedPane, LayoutConfig, ProjectList, SessionList};
 
+#[derive(Parser)]
+#[command(name = "claude-tail")]
+#[command(about = "TUI for viewing Claude.ai conversation logs")]
+struct Args {
+    /// Color theme to use
+    #[arg(short, long, default_value = "tokyonight-storm")]
+    theme: String,
+
+    /// List available themes and exit
+    #[arg(long)]
+    list_themes: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    // Handle --list-themes
+    if args.list_themes {
+        println!("Available themes:");
+        for theme in themes::list_themes() {
+            let marker = if theme == "tokyonight-storm" {
+                " (default)"
+            } else {
+                ""
+            };
+            println!("  {}{}", theme, marker);
+        }
+        println!("\nCustom themes can be added to: ~/.config/claude-tail/themes/");
+        return Ok(());
+    }
+
+    // Load theme
+    let theme = themes::load_theme(&args.theme)?;
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -36,7 +71,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = App::new()?;
+    let mut app = App::new(theme)?;
 
     // Run main loop
     let result = run_app(&mut terminal, &mut app).await;
