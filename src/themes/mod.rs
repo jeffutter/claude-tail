@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
@@ -152,17 +152,17 @@ pub fn list_themes() -> Vec<String> {
     let mut themes: Vec<String> = bundled_themes().into_iter().map(String::from).collect();
 
     // Add custom themes
-    if let Some(dir) = custom_themes_dir() {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
-                    if let Some(stem) = path.file_stem() {
-                        let name = stem.to_string_lossy().to_string();
-                        if !themes.contains(&name) {
-                            themes.push(name);
-                        }
-                    }
+    if let Some(dir) = custom_themes_dir()
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
+                && let Some(stem) = path.file_stem()
+            {
+                let name = stem.to_string_lossy().to_string();
+                if !themes.contains(&name) {
+                    themes.push(name);
                 }
             }
         }

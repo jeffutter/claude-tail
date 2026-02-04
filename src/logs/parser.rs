@@ -162,20 +162,19 @@ fn parse_progress_data(
     let mut entries = Vec::new();
 
     // Check for message in progress data (assistant responses and tool results come through here)
-    if let Some(message) = data.get("message") {
-        if let Some(role) = message.get("role").and_then(|r| r.as_str()) {
-            if let Some(content) = message.get("content") {
-                match role {
-                    "assistant" => {
-                        entries.extend(parse_content_blocks(content, timestamp));
-                    }
-                    "user" => {
-                        // Tool results come as user messages
-                        entries.extend(parse_content_blocks(content, timestamp));
-                    }
-                    _ => {}
-                }
+    if let Some(message) = data.get("message")
+        && let Some(role) = message.get("role").and_then(|r| r.as_str())
+        && let Some(content) = message.get("content")
+    {
+        match role {
+            "assistant" => {
+                entries.extend(parse_content_blocks(content, timestamp));
             }
+            "user" => {
+                // Tool results come as user messages
+                entries.extend(parse_content_blocks(content, timestamp));
+            }
+            _ => {}
         }
     }
 

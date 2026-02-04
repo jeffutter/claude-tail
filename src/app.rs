@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use crate::logs::{
-    discover_projects, discover_sessions, merge_tool_results, parse_jsonl_file, DisplayEntry,
-    Project, Session, SessionWatcher,
+    DisplayEntry, Project, Session, SessionWatcher, discover_projects, discover_sessions,
+    merge_tool_results, parse_jsonl_file,
 };
 use crate::ui::{ConversationState, ProjectListState, SessionListState, Theme};
 
@@ -87,19 +87,19 @@ impl App {
     }
 
     pub fn load_sessions_for_selected_project(&mut self) {
-        if let Some(idx) = self.project_state.selected() {
-            if let Some(project) = self.projects.get(idx) {
-                match discover_sessions(project) {
-                    Ok(sessions) => {
-                        self.sessions = sessions;
-                        self.session_state = SessionListState::new();
-                        self.load_conversation_for_selected_session();
-                    }
-                    Err(e) => {
-                        self.error_message = Some(format!("Failed to load sessions: {}", e));
-                        self.sessions.clear();
-                        self.conversation.clear();
-                    }
+        if let Some(idx) = self.project_state.selected()
+            && let Some(project) = self.projects.get(idx)
+        {
+            match discover_sessions(project) {
+                Ok(sessions) => {
+                    self.sessions = sessions;
+                    self.session_state = SessionListState::new();
+                    self.load_conversation_for_selected_session();
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to load sessions: {}", e));
+                    self.sessions.clear();
+                    self.conversation.clear();
                 }
             }
         }
@@ -117,10 +117,10 @@ impl App {
             Ok(projects) => {
                 self.projects = projects;
                 // Restore selection by matching path
-                if let Some(path) = selected_path {
-                    if let Some(idx) = self.projects.iter().position(|p| p.path == path) {
-                        self.project_state.select(Some(idx));
-                    }
+                if let Some(path) = selected_path
+                    && let Some(idx) = self.projects.iter().position(|p| p.path == path)
+                {
+                    self.project_state.select(Some(idx));
                 }
             }
             Err(e) => {
@@ -148,10 +148,10 @@ impl App {
             Ok(sessions) => {
                 self.sessions = sessions;
                 // Restore selection by matching log_path
-                if let Some(path) = selected_path {
-                    if let Some(idx) = self.sessions.iter().position(|s| s.log_path == path) {
-                        self.session_state.select(Some(idx));
-                    }
+                if let Some(path) = selected_path
+                    && let Some(idx) = self.sessions.iter().position(|s| s.log_path == path)
+                {
+                    self.session_state.select(Some(idx));
                 }
             }
             Err(e) => {
@@ -200,27 +200,23 @@ impl App {
                         // merged from the first new entry
                         if let Some(DisplayEntry::ToolCall { id, result, .. }) =
                             self.conversation.last_mut()
+                            && result.is_none()
+                            && let Some(DisplayEntry::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                                ..
+                            }) = merged_new.first()
+                            && tool_use_id == id
                         {
-                            if result.is_none() {
-                                if let Some(DisplayEntry::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    is_error,
-                                    ..
-                                }) = merged_new.first()
-                                {
-                                    if tool_use_id == id {
-                                        // Merge the result into the existing ToolCall
-                                        *result = Some(crate::logs::ToolCallResult {
-                                            content: content.clone(),
-                                            is_error: *is_error,
-                                        });
-                                        // Skip the first entry since we merged it
-                                        self.conversation.extend(merged_new.into_iter().skip(1));
-                                        return;
-                                    }
-                                }
-                            }
+                            // Merge the result into the existing ToolCall
+                            *result = Some(crate::logs::ToolCallResult {
+                                content: content.clone(),
+                                is_error: *is_error,
+                            });
+                            // Skip the first entry since we merged it
+                            self.conversation.extend(merged_new.into_iter().skip(1));
+                            return;
                         }
 
                         self.conversation.extend(merged_new);

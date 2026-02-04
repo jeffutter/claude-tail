@@ -14,18 +14,18 @@ use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::Rect,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, StatefulWidget},
-    Frame, Terminal,
 };
 
 use app::App;
-use input::{handle_key_event, Action};
+use input::{Action, handle_key_event};
 use ui::{AppLayout, ConversationView, FocusedPane, LayoutConfig, ProjectList, SessionList};
 
 #[derive(Parser)]
@@ -111,15 +111,14 @@ where
         tokio::select! {
             // Poll for keyboard events
             _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                if event::poll(Duration::from_millis(0))? {
-                    if let Event::Key(key) = event::read()? {
+                if event::poll(Duration::from_millis(0))?
+                    && let Event::Key(key) = event::read()? {
                         match handle_key_event(app, key) {
                             Action::Quit => return Ok(()),
                             Action::Redraw => continue,
                             Action::None => {}
                         }
                     }
-                }
             }
 
             // Watch for file changes

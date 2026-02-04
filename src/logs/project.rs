@@ -227,11 +227,11 @@ pub fn discover_sessions(project: &Project) -> Result<Vec<Session>> {
 fn load_session_summaries(path: &Path) -> HashMap<String, Option<String>> {
     let mut summaries = HashMap::new();
 
-    if let Ok(content) = std::fs::read_to_string(path) {
-        if let Ok(index) = serde_json::from_str::<SessionsIndex>(&content) {
-            for entry in index.entries {
-                summaries.insert(entry.session_id, entry.summary);
-            }
+    if let Ok(content) = std::fs::read_to_string(path)
+        && let Ok(index) = serde_json::from_str::<SessionsIndex>(&content)
+    {
+        for entry in index.entries {
+            summaries.insert(entry.session_id, entry.summary);
         }
     }
 

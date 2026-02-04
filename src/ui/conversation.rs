@@ -391,13 +391,13 @@ impl<'a> ConversationView<'a> {
             Span::styled(pattern, self.theme.tool_input),
         ]));
 
-        if self.expand_tools {
-            if let Some(p) = path {
-                lines.push(Line::from(Span::styled(
-                    format!("  [in {}]", p),
-                    self.theme.thinking_collapsed,
-                )));
-            }
+        if self.expand_tools
+            && let Some(p) = path
+        {
+            lines.push(Line::from(Span::styled(
+                format!("  [in {}]", p),
+                self.theme.thinking_collapsed,
+            )));
         }
     }
 
@@ -588,27 +588,26 @@ impl<'a> ConversationView<'a> {
                     lines.push(Line::from(Span::styled(header, self.theme.hook_event)));
 
                     // Show command if expanded and it's a real command (not just "callback")
-                    if self.expand_tools {
-                        if let Some(cmd) = command {
-                            if cmd != "callback" {
-                                // Abbreviate long commands (respecting char boundaries)
-                                let display_cmd = if cmd.len() > 60 {
-                                    let truncate_at = cmd
-                                        .char_indices()
-                                        .take_while(|(i, _)| *i < 57)
-                                        .last()
-                                        .map(|(i, c)| i + c.len_utf8())
-                                        .unwrap_or(0);
-                                    format!("{}...", &cmd[..truncate_at])
-                                } else {
-                                    cmd.clone()
-                                };
-                                lines.push(Line::from(Span::styled(
-                                    format!("  → {}", display_cmd),
-                                    self.theme.hook_event,
-                                )));
-                            }
-                        }
+                    if self.expand_tools
+                        && let Some(cmd) = command
+                        && cmd != "callback"
+                    {
+                        // Abbreviate long commands (respecting char boundaries)
+                        let display_cmd = if cmd.len() > 60 {
+                            let truncate_at = cmd
+                                .char_indices()
+                                .take_while(|(i, _)| *i < 57)
+                                .last()
+                                .map(|(i, c)| i + c.len_utf8())
+                                .unwrap_or(0);
+                            format!("{}...", &cmd[..truncate_at])
+                        } else {
+                            cmd.clone()
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("  → {}", display_cmd),
+                            self.theme.hook_event,
+                        )));
                     }
                     lines.push(Line::from(""));
                 }
