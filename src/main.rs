@@ -64,6 +64,10 @@ async fn run_app<B: ratatui::backend::Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
+    let mut list_refresh_interval = tokio::time::interval(Duration::from_secs(5));
+    // Don't let missed ticks accumulate
+    list_refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         // Draw UI
         terminal.draw(|frame| draw(frame, app))?;
@@ -88,6 +92,12 @@ where
                 if let Some(logs::WatcherEvent::FileModified(_)) = event {
                     app.refresh_conversation();
                 }
+            }
+
+            // Periodically refresh projects and sessions lists
+            _ = list_refresh_interval.tick() => {
+                app.refresh_projects();
+                app.refresh_sessions();
             }
         }
     }

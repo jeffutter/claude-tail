@@ -45,6 +45,7 @@ impl<'a> ConversationView<'a> {
             "Edit" => self.render_edit_tool(lines, parsed.as_ref(), content_width),
             "Grep" => self.render_grep_tool(lines, parsed.as_ref(), content_width),
             "Glob" => self.render_glob_tool(lines, parsed.as_ref(), content_width),
+            "Task" => self.render_task_tool(lines, parsed.as_ref(), content_width),
             _ => self.render_generic_tool(lines, name, input, content_width),
         }
     }
@@ -288,6 +289,48 @@ impl<'a> ConversationView<'a> {
                 lines.push(Line::from(Span::styled(
                     format!("  [in {}]", p),
                     self.theme.thinking_collapsed,
+                )));
+            }
+        }
+    }
+
+    fn render_task_tool(&self, lines: &mut Vec<Line<'a>>, parsed: Option<&serde_json::Value>, content_width: usize) {
+        let description = parsed
+            .and_then(|v| v.get("description"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let subagent_type = parsed
+            .and_then(|v| v.get("subagent_type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let prompt = parsed
+            .and_then(|v| v.get("prompt"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Header: Task (subagent_type): description
+        lines.push(Line::from(vec![
+            Span::styled("Task ", self.theme.agent_spawn),
+            Span::styled(format!("({})", subagent_type), self.theme.thinking_collapsed),
+            Span::styled(": ", self.theme.agent_spawn),
+            Span::styled(description, self.theme.tool_input),
+        ]));
+
+        // Show prompt when expanded
+        if self.expand_tools && !prompt.is_empty() {
+            // Truncate long prompts
+            let display_prompt = if prompt.len() > 300 {
+                format!("{}...", &prompt[..300])
+            } else {
+                prompt
+            };
+            for line in wrap_text(&display_prompt, content_width.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    self.theme.thinking,
                 )));
             }
         }

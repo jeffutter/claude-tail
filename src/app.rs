@@ -105,6 +105,61 @@ impl App {
         }
     }
 
+    /// Refresh projects list, preserving selection if possible
+    pub fn refresh_projects(&mut self) {
+        let selected_path = self
+            .project_state
+            .selected()
+            .and_then(|idx| self.projects.get(idx))
+            .map(|p| p.path.clone());
+
+        match discover_projects() {
+            Ok(projects) => {
+                self.projects = projects;
+                // Restore selection by matching path
+                if let Some(path) = selected_path {
+                    if let Some(idx) = self.projects.iter().position(|p| p.path == path) {
+                        self.project_state.select(Some(idx));
+                    }
+                }
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to refresh projects: {}", e));
+            }
+        }
+    }
+
+    /// Refresh sessions list for current project, preserving selection if possible
+    pub fn refresh_sessions(&mut self) {
+        let Some(project_idx) = self.project_state.selected() else {
+            return;
+        };
+        let Some(project) = self.projects.get(project_idx) else {
+            return;
+        };
+
+        let selected_path = self
+            .session_state
+            .selected()
+            .and_then(|idx| self.sessions.get(idx))
+            .map(|s| s.log_path.clone());
+
+        match discover_sessions(project) {
+            Ok(sessions) => {
+                self.sessions = sessions;
+                // Restore selection by matching log_path
+                if let Some(path) = selected_path {
+                    if let Some(idx) = self.sessions.iter().position(|s| s.log_path == path) {
+                        self.session_state.select(Some(idx));
+                    }
+                }
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to refresh sessions: {}", e));
+            }
+        }
+    }
+
     pub fn load_conversation_for_selected_session(&mut self) {
         self.watcher.stop();
 
