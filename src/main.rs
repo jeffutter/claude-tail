@@ -178,10 +178,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
         app::FocusPane::Conversation => FocusedPane::Conversation,
     };
 
-    // Calculate max content widths
-    let max_project_width = ProjectList::max_content_width(&app.projects);
-    let max_session_width = SessionList::max_content_width(&app.sessions);
-    let max_agent_width = AgentList::max_content_width(&app.agents);
+    // Get cached max content widths
+    let max_project_width = app.get_project_width();
+    let max_session_width = app.get_session_width();
+    let max_agent_width = app.get_agent_width();
 
     let layout_config = LayoutConfig {
         focused_pane,

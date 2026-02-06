@@ -77,6 +77,12 @@ pub struct App {
     discovery_tx: mpsc::UnboundedSender<DiscoveryMessage>,
     /// Whether to automatically switch to most recent project/session/agent
     pub super_follow_enabled: bool,
+    /// Cached maximum content width for projects list
+    cached_project_width: Option<u16>,
+    /// Cached maximum content width for sessions list
+    cached_session_width: Option<u16>,
+    /// Cached maximum content width for agents list
+    cached_agent_width: Option<u16>,
 }
 
 impl App {
@@ -118,6 +124,9 @@ impl App {
             discovery_rx,
             discovery_tx,
             super_follow_enabled,
+            cached_project_width: None,
+            cached_session_width: None,
+            cached_agent_width: None,
         };
 
         // Load initial agents and conversation if there's a session
@@ -160,6 +169,7 @@ impl App {
             match discover_sessions(project) {
                 Ok(sessions) => {
                     self.sessions = sessions;
+                    self.cached_session_width = None; // Invalidate cache
                     self.session_state = SessionListState::new();
                     self.load_agents_for_selected_session();
                     self.load_conversation_for_selected_agent();
@@ -167,7 +177,9 @@ impl App {
                 Err(e) => {
                     self.error_message = Some(format!("Failed to load sessions: {}", e));
                     self.sessions.clear();
+                    self.cached_session_width = None; // Invalidate cache
                     self.agents.clear();
+                    self.cached_agent_width = None; // Invalidate cache
                     self.conversation.clear();
                 }
             }
@@ -181,15 +193,18 @@ impl App {
             match discover_agents(session) {
                 Ok(agents) => {
                     self.agents = agents;
+                    self.cached_agent_width = None; // Invalidate cache
                     self.agent_state = AgentListState::new();
                 }
                 Err(e) => {
                     self.error_message = Some(format!("Failed to load agents: {}", e));
                     self.agents.clear();
+                    self.cached_agent_width = None; // Invalidate cache
                 }
             }
         } else {
             self.agents.clear();
+            self.cached_agent_width = None; // Invalidate cache
             self.agent_state = AgentListState::new();
         }
     }
@@ -215,6 +230,7 @@ impl App {
             Ok(projects) => {
                 let was_empty = self.projects.is_empty();
                 self.projects = projects;
+                self.cached_project_width = None; // Invalidate cache
                 // Restore selection by matching path, or select first if we had no valid selection
                 if let Some(path) = selected_path
                     && let Some(idx) = self.projects.iter().position(|p| p.path == path)
@@ -283,6 +299,7 @@ impl App {
             Ok(sessions) => {
                 let was_empty = self.sessions.is_empty();
                 self.sessions = sessions;
+                self.cached_session_width = None; // Invalidate cache
                 // Restore selection by matching log_path, or select first if no valid selection
                 if let Some(path) = selected_path
                     && let Some(idx) = self.sessions.iter().position(|s| s.log_path == path)
@@ -325,6 +342,7 @@ impl App {
             Ok(agents) => {
                 let was_empty = self.agents.is_empty();
                 self.agents = agents;
+                self.cached_agent_width = None; // Invalidate cache
                 // Restore selection by matching log_path, or select first if no valid selection
                 if let Some(path) = selected_path
                     && let Some(idx) = self.agents.iter().position(|a| a.log_path == path)
@@ -530,6 +548,42 @@ impl App {
             .map(|a| a.display_name.as_str())
     }
 
+    /// Get cached project width, computing and caching if needed
+    pub fn get_project_width(&mut self) -> u16 {
+        if let Some(width) = self.cached_project_width {
+            width
+        } else {
+            use crate::ui::ProjectList;
+            let width = ProjectList::max_content_width(&self.projects);
+            self.cached_project_width = Some(width);
+            width
+        }
+    }
+
+    /// Get cached session width, computing and caching if needed
+    pub fn get_session_width(&mut self) -> u16 {
+        if let Some(width) = self.cached_session_width {
+            width
+        } else {
+            use crate::ui::SessionList;
+            let width = SessionList::max_content_width(&self.sessions);
+            self.cached_session_width = Some(width);
+            width
+        }
+    }
+
+    /// Get cached agent width, computing and caching if needed
+    pub fn get_agent_width(&mut self) -> u16 {
+        if let Some(width) = self.cached_agent_width {
+            width
+        } else {
+            use crate::ui::AgentList;
+            let width = AgentList::max_content_width(&self.agents);
+            self.cached_agent_width = Some(width);
+            width
+        }
+    }
+
     /// Automatically switch to the project/session/agent with most recent activity
     /// Only operates if super_follow_enabled is true
     pub fn auto_switch_to_most_recent(&mut self) {
@@ -594,6 +648,9 @@ impl Default for App {
                 discovery_rx,
                 discovery_tx,
                 super_follow_enabled: false,
+                cached_project_width: None,
+                cached_session_width: None,
+                cached_agent_width: None,
             }
         })
     }
