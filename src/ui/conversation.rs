@@ -670,9 +670,10 @@ impl<'a> ConversationView<'a> {
             && let Some(command) = parsed
                 .and_then(|v| v.get("command"))
                 .and_then(|v| v.as_str())
-                && !command.is_empty() {
-                    count += wrap_text(command, content_width.saturating_sub(2)).len();
-                }
+            && !command.is_empty()
+        {
+            count += wrap_text(command, content_width.saturating_sub(2)).len();
+        }
         count
     }
 
@@ -700,15 +701,15 @@ impl<'a> ConversationView<'a> {
             && let Some(content) = parsed
                 .and_then(|v| v.get("content"))
                 .and_then(|v| v.as_str())
-            {
-                let line_count = content.lines().count();
-                if line_count > 0 {
-                    count += line_count.min(5); // preview lines (max 5)
-                    if line_count > 5 {
-                        count += 1; // "more lines" indicator
-                    }
+        {
+            let line_count = content.lines().count();
+            if line_count > 0 {
+                count += line_count.min(5); // preview lines (max 5)
+                if line_count > 5 {
+                    count += 1; // "more lines" indicator
                 }
             }
+        }
         count
     }
 
@@ -718,23 +719,25 @@ impl<'a> ConversationView<'a> {
             if let Some(old_string) = parsed
                 .and_then(|v| v.get("old_string"))
                 .and_then(|v| v.as_str())
-                && !old_string.is_empty() {
-                    count += 1; // "- old:" label
-                    count += old_string.lines().count().min(3);
-                    if old_string.lines().count() > 3 {
-                        count += 1; // "more lines" indicator
-                    }
+                && !old_string.is_empty()
+            {
+                count += 1; // "- old:" label
+                count += old_string.lines().count().min(3);
+                if old_string.lines().count() > 3 {
+                    count += 1; // "more lines" indicator
                 }
+            }
             if let Some(new_string) = parsed
                 .and_then(|v| v.get("new_string"))
                 .and_then(|v| v.as_str())
-                && !new_string.is_empty() {
-                    count += 1; // "+ new:" label
-                    count += new_string.lines().count().min(3);
-                    if new_string.lines().count() > 3 {
-                        count += 1; // "more lines" indicator
-                    }
+                && !new_string.is_empty()
+            {
+                count += 1; // "+ new:" label
+                count += new_string.lines().count().min(3);
+                if new_string.lines().count() > 3 {
+                    count += 1; // "more lines" indicator
                 }
+            }
         }
         count
     }
@@ -764,9 +767,9 @@ impl<'a> ConversationView<'a> {
                 .and_then(|v| v.get("path"))
                 .and_then(|v| v.as_str())
                 .is_some()
-            {
-                count += 1; // path line
-            }
+        {
+            count += 1; // path line
+        }
         count
     }
 
@@ -780,14 +783,15 @@ impl<'a> ConversationView<'a> {
             && let Some(prompt) = parsed
                 .and_then(|v| v.get("prompt"))
                 .and_then(|v| v.as_str())
-                && !prompt.is_empty() {
-                    let display_prompt = if prompt.len() > 300 {
-                        &prompt[..300]
-                    } else {
-                        prompt
-                    };
-                    count += wrap_text(display_prompt, content_width.saturating_sub(2)).len();
-                }
+            && !prompt.is_empty()
+        {
+            let display_prompt = if prompt.len() > 300 {
+                &prompt[..300]
+            } else {
+                prompt
+            };
+            count += wrap_text(display_prompt, content_width.saturating_sub(2)).len();
+        }
         count
     }
 
@@ -797,9 +801,9 @@ impl<'a> ConversationView<'a> {
             && let Some(todos) = parsed
                 .and_then(|v| v.get("todos"))
                 .and_then(|v| v.as_array())
-            {
-                count += todos.len(); // one line per todo item
-            }
+        {
+            count += todos.len(); // one line per todo item
+        }
         count
     }
 

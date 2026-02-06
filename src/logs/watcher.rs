@@ -21,7 +21,9 @@ impl LogWatcher {
         let (tx, rx) = mpsc::channel();
         let (event_tx, event_rx) = tokio_mpsc::unbounded_channel();
 
-        let mut debouncer = new_debouncer(Duration::from_millis(100), tx)?;
+        // Increase debounce to 500ms to prevent flooding the event loop
+        // when watching actively-written files (like current Claude sessions)
+        let mut debouncer = new_debouncer(Duration::from_millis(500), tx)?;
 
         debouncer
             .watcher()

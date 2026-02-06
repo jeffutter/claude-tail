@@ -45,11 +45,20 @@ struct Args {
     /// Enable automatic switching to project/session/agent with most recent activity
     #[arg(short = 's', long)]
     super_follow: bool,
+
+    /// Enable logging to ~/.claude/logs/claude-tail.log (off by default)
+    /// Levels: trace, debug, info, warn, error. Can also set via RUST_LOG env var.
+    #[arg(long, value_name = "LEVEL")]
+    log_level: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize logging to ~/.claude/logs/claude-tail.log
+    // Only enabled if --log-level is specified or RUST_LOG env var is set
+    init_logging(args.log_level.as_deref());
 
     // Handle --list-themes
     if args.list_themes {
@@ -110,11 +119,20 @@ where
     list_refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        let loop_start = std::time::Instant::now();
+
         // Draw UI
+        let draw_start = std::time::Instant::now();
         terminal.draw(|frame| draw(frame, app))?;
+        let draw_elapsed = draw_start.elapsed();
+        if draw_elapsed.as_millis() > 50 {
+            tracing::warn!("Slow rendering: {:?}", draw_elapsed);
+        }
 
         // Handle events with timeout for file watching
+        // Use biased to prioritize keyboard input over file events
         tokio::select! {
+            biased;
             // Poll for keyboard events
             _ = tokio::time::sleep(Duration::from_millis(100)) => {
                 if event::poll(Duration::from_millis(0))?
@@ -163,6 +181,11 @@ where
                 app.refresh_sessions();
                 // Note: auto_switch will be called when discovery completes
             }
+        }
+
+        let loop_elapsed = loop_start.elapsed();
+        if loop_elapsed.as_millis() > 200 {
+            tracing::warn!("Slow event loop: {:?}", loop_elapsed);
         }
     }
 }
@@ -393,4 +416,49 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     );
 
     frame.render_widget(help, help_area);
+}
+
+fn init_logging(log_level: Option<&str>) {
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+    // Determine log level:
+    // 1. Check RUST_LOG environment variable first
+    // 2. Then use --log-level argument
+    // 3. Default to off (no logging)
+    let filter = if let Ok(env_filter) = EnvFilter::try_from_default_env() {
+        // RUST_LOG is set, use it
+        env_filter
+    } else if let Some(level) = log_level {
+        // --log-level argument provided
+        EnvFilter::new(format!("claude_tail={}", level))
+    } else {
+        // No logging by default
+        EnvFilter::new("off")
+    };
+
+    // If logging is disabled, just set up a no-op subscriber
+    if filter.to_string().contains("off") {
+        tracing_subscriber::registry().with(filter).init();
+        return;
+    }
+
+    // Log to ~/.claude/logs/claude-tail.log
+    if let Some(home) = dirs::home_dir() {
+        let log_dir = home.join(".claude").join("logs");
+        if std::fs::create_dir_all(&log_dir).is_ok() {
+            let file_appender = tracing_appender::rolling::never(&log_dir, "claude-tail.log");
+
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_writer(file_appender).with_ansi(false))
+                .with(filter)
+                .init();
+
+            return;
+        }
+    }
+
+    // Fallback: no logging if we can't create the log directory
+    tracing_subscriber::registry()
+        .with(EnvFilter::new("off"))
+        .init();
 }

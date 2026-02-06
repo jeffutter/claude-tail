@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -83,6 +84,8 @@ pub struct App {
     cached_session_width: Option<u16>,
     /// Cached maximum content width for agents list
     cached_agent_width: Option<u16>,
+    /// Last time we refreshed the conversation from file watcher
+    last_conversation_refresh: Option<Instant>,
 }
 
 impl App {
@@ -127,6 +130,7 @@ impl App {
             cached_project_width: None,
             cached_session_width: None,
             cached_agent_width: None,
+            last_conversation_refresh: None,
         };
 
         // Load initial agents and conversation if there's a session
@@ -501,6 +505,14 @@ impl App {
     }
 
     pub fn refresh_conversation(&mut self) {
+        // Rate limit: Don't refresh more than once per second
+        // This prevents flooding from actively-written files
+        if let Some(last_refresh) = self.last_conversation_refresh
+            && last_refresh.elapsed() < Duration::from_secs(1)
+        {
+            return;
+        }
+
         // Prevent duplicate refreshes
         if self.is_refreshing {
             return;
@@ -509,6 +521,7 @@ impl App {
         if let Some(path) = self.watcher.current_path().cloned() {
             let position = self.watcher.file_position();
             self.is_refreshing = true;
+            self.last_conversation_refresh = Some(Instant::now());
 
             // Spawn async parsing task
             let tx = self.parse_tx.clone();
@@ -651,6 +664,7 @@ impl Default for App {
                 cached_project_width: None,
                 cached_session_width: None,
                 cached_agent_width: None,
+                last_conversation_refresh: None,
             }
         })
     }
