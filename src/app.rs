@@ -367,20 +367,12 @@ impl App {
             .map(|p| p.name.as_str())
     }
 
-    /// Returns the full path of the selected project, relative to home (~)
-    pub fn selected_project_path(&self) -> Option<String> {
+    /// Returns the abbreviated path of the selected project (compressed intermediate dirs)
+    pub fn selected_project_abbreviated_path(&self) -> Option<String> {
         self.project_state
             .selected()
             .and_then(|idx| self.projects.get(idx))
-            .map(|p| {
-                let path = p.original_path.to_string_lossy();
-                let home = std::env::var("HOME").unwrap_or_default();
-                if !home.is_empty() && path.starts_with(&home) {
-                    format!("~{}", &path[home.len()..])
-                } else {
-                    path.to_string()
-                }
-            })
+            .map(|p| p.abbreviated_path())
     }
 
     pub fn selected_session_name(&self) -> Option<String> {

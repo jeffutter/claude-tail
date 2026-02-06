@@ -241,7 +241,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let project_path = app.selected_project_path().unwrap_or_default();
+    let project_path = app.selected_project_abbreviated_path().unwrap_or_default();
     let session_name = app.selected_session_name().unwrap_or_default();
     let agent_name = app.selected_agent_name().unwrap_or_default();
 
