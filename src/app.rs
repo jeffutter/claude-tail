@@ -30,6 +30,15 @@ pub enum ParseMessage {
     },
 }
 
+/// Message sent when async project/session discovery completes
+pub enum DiscoveryMessage {
+    ProjectsDiscovered(Result<Vec<Project>>),
+    SessionsDiscovered {
+        project_path: PathBuf,
+        result: Result<Vec<Session>>,
+    },
+}
+
 pub struct App {
     pub focus: FocusPane,
     pub projects: Vec<Project>,
@@ -59,6 +68,10 @@ pub struct App {
     pub is_parsing: bool,
     /// Path of the file currently being parsed
     pub parsing_path: Option<PathBuf>,
+    /// Channel receiver for async discovery results
+    pub discovery_rx: mpsc::UnboundedReceiver<DiscoveryMessage>,
+    /// Channel sender for async discovery results
+    discovery_tx: mpsc::UnboundedSender<DiscoveryMessage>,
 }
 
 impl App {
@@ -71,6 +84,7 @@ impl App {
         };
 
         let (parse_tx, parse_rx) = mpsc::unbounded_channel();
+        let (discovery_tx, discovery_rx) = mpsc::unbounded_channel();
 
         let mut app = Self {
             focus: FocusPane::Projects,
@@ -95,6 +109,8 @@ impl App {
             parse_tx,
             is_parsing: false,
             parsing_path: None,
+            discovery_rx,
+            discovery_tx,
         };
 
         // Load initial agents and conversation if there's a session
@@ -171,15 +187,24 @@ impl App {
         }
     }
 
-    /// Refresh projects list, preserving selection if possible
+    /// Refresh projects list by spawning a background discovery task
     pub fn refresh_projects(&mut self) {
+        let tx = self.discovery_tx.clone();
+        tokio::spawn(async move {
+            let result = discover_projects();
+            let _ = tx.send(DiscoveryMessage::ProjectsDiscovered(result));
+        });
+    }
+
+    /// Handle completion of background project discovery
+    pub fn handle_projects_discovered(&mut self, result: Result<Vec<Project>>) {
         let selected_path = self
             .project_state
             .selected()
             .and_then(|idx| self.projects.get(idx))
             .map(|p| p.path.clone());
 
-        match discover_projects() {
+        match result {
             Ok(projects) => {
                 let was_empty = self.projects.is_empty();
                 self.projects = projects;
@@ -203,14 +228,43 @@ impl App {
         }
     }
 
-    /// Refresh sessions list for current project, preserving selection if possible
+    /// Refresh sessions list by spawning a background discovery task
     pub fn refresh_sessions(&mut self) {
         let Some(project_idx) = self.project_state.selected() else {
             return;
         };
-        let Some(project) = self.projects.get(project_idx) else {
+        let Some(project) = self.projects.get(project_idx).cloned() else {
             return;
         };
+
+        let tx = self.discovery_tx.clone();
+        let project_path = project.path.clone();
+        tokio::spawn(async move {
+            let result = discover_sessions(&project);
+            let _ = tx.send(DiscoveryMessage::SessionsDiscovered {
+                project_path,
+                result,
+            });
+        });
+    }
+
+    /// Handle completion of background session discovery
+    pub fn handle_sessions_discovered(
+        &mut self,
+        project_path: PathBuf,
+        result: Result<Vec<Session>>,
+    ) {
+        // Only apply if this is still for the currently selected project
+        let current_project_path = self
+            .project_state
+            .selected()
+            .and_then(|idx| self.projects.get(idx))
+            .map(|p| &p.path);
+
+        if current_project_path != Some(&project_path) {
+            // Discovery result is stale (user changed projects), ignore it
+            return;
+        }
 
         let selected_path = self
             .session_state
@@ -218,7 +272,7 @@ impl App {
             .and_then(|idx| self.sessions.get(idx))
             .map(|s| s.log_path.clone());
 
-        match discover_sessions(project) {
+        match result {
             Ok(sessions) => {
                 let was_empty = self.sessions.is_empty();
                 self.sessions = sessions;
@@ -445,6 +499,7 @@ impl Default for App {
         // Infallible - returns empty state on error
         Self::new(Theme::default()).unwrap_or_else(|_| {
             let (parse_tx, parse_rx) = mpsc::unbounded_channel();
+            let (discovery_tx, discovery_rx) = mpsc::unbounded_channel();
             Self {
                 focus: FocusPane::Projects,
                 projects: Vec::new(),
@@ -468,6 +523,8 @@ impl Default for App {
                 parse_tx,
                 is_parsing: false,
                 parsing_path: None,
+                discovery_rx,
+                discovery_tx,
             }
         })
     }

@@ -139,6 +139,18 @@ where
                 }
             }
 
+            // Handle async discovery completion
+            Some(msg) = app.discovery_rx.recv() => {
+                match msg {
+                    app::DiscoveryMessage::ProjectsDiscovered(result) => {
+                        app.handle_projects_discovered(result);
+                    }
+                    app::DiscoveryMessage::SessionsDiscovered { project_path, result } => {
+                        app.handle_sessions_discovered(project_path, result);
+                    }
+                }
+            }
+
             // Periodically refresh projects and sessions lists
             _ = list_refresh_interval.tick() => {
                 app.refresh_projects();
