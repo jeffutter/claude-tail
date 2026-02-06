@@ -562,11 +562,355 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_entries(&self, width: usize) -> Vec<Line<'a>> {
-        let mut lines = Vec::new();
+    /// Calculate how many lines an entry would generate without actually rendering
+    fn calculate_entry_lines(&self, entry: &DisplayEntry, content_width: usize) -> usize {
+        match entry {
+            DisplayEntry::UserMessage { text, .. } => {
+                1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
+            }
+            DisplayEntry::AssistantText { text, .. } => {
+                1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
+            }
+            DisplayEntry::ToolCall {
+                name,
+                input,
+                result,
+                ..
+            } => {
+                let count =
+                    self.calculate_tool_call_lines(name, input, result.as_ref(), content_width);
+                count + 1 // blank line
+            }
+            DisplayEntry::ToolResult {
+                content,
+                is_error: _,
+                ..
+            } => {
+                let mut count = 1; // label line
+                if self.expand_tools && !content.is_empty() {
+                    let display_content = if content.len() > 500 {
+                        let truncate_at = content
+                            .char_indices()
+                            .take_while(|(i, _)| *i < 500)
+                            .last()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .unwrap_or(0);
+                        &content[..truncate_at]
+                    } else {
+                        content.as_str()
+                    };
+                    count += wrap_text(display_content, content_width).len();
+                }
+                count + 1 // blank line
+            }
+            DisplayEntry::Thinking { text, .. } => {
+                if self.show_thinking {
+                    1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
+                } else {
+                    1 // collapsed indicator
+                }
+            }
+            DisplayEntry::HookEvent { command, .. } => {
+                let mut count = 1; // header
+                if self.expand_tools
+                    && let Some(cmd) = command
+                    && cmd != "callback"
+                {
+                    count += 1; // command line
+                }
+                count + 1 // blank line
+            }
+            DisplayEntry::AgentSpawn { description, .. } => {
+                let mut count = 1; // header
+                if !description.is_empty() {
+                    count += 1; // description line
+                }
+                count + 1 // blank line
+            }
+        }
+    }
+
+    /// Calculate how many lines a tool call would generate
+    fn calculate_tool_call_lines(
+        &self,
+        name: &str,
+        input: &str,
+        result: Option<&ToolCallResult>,
+        content_width: usize,
+    ) -> usize {
+        let parsed: Option<serde_json::Value> = serde_json::from_str(input).ok();
+
+        let mut count = match name {
+            "Bash" => self.calculate_bash_tool_lines(parsed.as_ref(), content_width),
+            "Read" => self.calculate_read_tool_lines(parsed.as_ref()),
+            "Write" => self.calculate_write_tool_lines(parsed.as_ref(), content_width),
+            "Edit" => self.calculate_edit_tool_lines(parsed.as_ref()),
+            "Grep" => self.calculate_grep_tool_lines(parsed.as_ref()),
+            "Glob" => self.calculate_glob_tool_lines(parsed.as_ref()),
+            "Task" => self.calculate_task_tool_lines(parsed.as_ref(), content_width),
+            "TodoWrite" => self.calculate_todowrite_tool_lines(parsed.as_ref()),
+            _ => self.calculate_generic_tool_lines(input, content_width),
+        };
+
+        // Add inline result lines if present
+        if let Some(res) = result {
+            count += self.calculate_inline_result_lines(res, content_width);
+        }
+
+        count
+    }
+
+    fn calculate_bash_tool_lines(
+        &self,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools
+            && let Some(command) = parsed
+                .and_then(|v| v.get("command"))
+                .and_then(|v| v.as_str())
+                && !command.is_empty() {
+                    count += wrap_text(command, content_width.saturating_sub(2)).len();
+                }
+        count
+    }
+
+    fn calculate_read_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools {
+            let offset = parsed
+                .and_then(|v| v.get("offset"))
+                .and_then(|v| v.as_u64());
+            let limit = parsed.and_then(|v| v.get("limit")).and_then(|v| v.as_u64());
+            if offset.is_some() || limit.is_some() {
+                count += 1; // range line
+            }
+        }
+        count
+    }
+
+    fn calculate_write_tool_lines(
+        &self,
+        parsed: Option<&serde_json::Value>,
+        _content_width: usize,
+    ) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools
+            && let Some(content) = parsed
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.as_str())
+            {
+                let line_count = content.lines().count();
+                if line_count > 0 {
+                    count += line_count.min(5); // preview lines (max 5)
+                    if line_count > 5 {
+                        count += 1; // "more lines" indicator
+                    }
+                }
+            }
+        count
+    }
+
+    fn calculate_edit_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools {
+            if let Some(old_string) = parsed
+                .and_then(|v| v.get("old_string"))
+                .and_then(|v| v.as_str())
+                && !old_string.is_empty() {
+                    count += 1; // "- old:" label
+                    count += old_string.lines().count().min(3);
+                    if old_string.lines().count() > 3 {
+                        count += 1; // "more lines" indicator
+                    }
+                }
+            if let Some(new_string) = parsed
+                .and_then(|v| v.get("new_string"))
+                .and_then(|v| v.as_str())
+                && !new_string.is_empty() {
+                    count += 1; // "+ new:" label
+                    count += new_string.lines().count().min(3);
+                    if new_string.lines().count() > 3 {
+                        count += 1; // "more lines" indicator
+                    }
+                }
+        }
+        count
+    }
+
+    fn calculate_grep_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools {
+            let has_path = parsed
+                .and_then(|v| v.get("path"))
+                .and_then(|v| v.as_str())
+                .is_some();
+            let has_glob = parsed
+                .and_then(|v| v.get("glob"))
+                .and_then(|v| v.as_str())
+                .is_some();
+            if has_path || has_glob {
+                count += 1; // details line
+            }
+        }
+        count
+    }
+
+    fn calculate_glob_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools
+            && parsed
+                .and_then(|v| v.get("path"))
+                .and_then(|v| v.as_str())
+                .is_some()
+            {
+                count += 1; // path line
+            }
+        count
+    }
+
+    fn calculate_task_tool_lines(
+        &self,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools
+            && let Some(prompt) = parsed
+                .and_then(|v| v.get("prompt"))
+                .and_then(|v| v.as_str())
+                && !prompt.is_empty() {
+                    let display_prompt = if prompt.len() > 300 {
+                        &prompt[..300]
+                    } else {
+                        prompt
+                    };
+                    count += wrap_text(display_prompt, content_width.saturating_sub(2)).len();
+                }
+        count
+    }
+
+    fn calculate_todowrite_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools
+            && let Some(todos) = parsed
+                .and_then(|v| v.get("todos"))
+                .and_then(|v| v.as_array())
+            {
+                count += todos.len(); // one line per todo item
+            }
+        count
+    }
+
+    fn calculate_generic_tool_lines(&self, input: &str, content_width: usize) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools && !input.is_empty() {
+            count += wrap_text(input, content_width).len();
+        }
+        count
+    }
+
+    fn calculate_inline_result_lines(
+        &self,
+        result: &ToolCallResult,
+        content_width: usize,
+    ) -> usize {
+        if !self.expand_tools {
+            return 1; // collapsed indicator
+        }
+
+        let mut count = 1; // separator line
+        if result.content.is_empty() {
+            count += 1; // empty result label
+        } else {
+            let display_content = if result.content.len() > 500 {
+                let truncate_at = result
+                    .content
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 500)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                &result.content[..truncate_at]
+            } else {
+                result.content.as_str()
+            };
+            count += wrap_text(display_content, content_width.saturating_sub(2)).len();
+        }
+        count
+    }
+
+    /// Calculate total lines that would be rendered for all entries
+    fn calculate_total_lines(&self, width: usize) -> usize {
+        let content_width = width.saturating_sub(4);
+        self.entries
+            .iter()
+            .map(|entry| self.calculate_entry_lines(entry, content_width))
+            .sum()
+    }
+
+    /// Renders entries visible in the viewport plus a small buffer.
+    ///
+    /// # Returns
+    /// Returns a tuple of:
+    /// - Vec<Line>: Rendered lines for visible entries (plus buffer)
+    /// - usize: The line number where the returned Vec starts (for skip calculation)
+    ///
+    /// # Arguments
+    /// * `width` - Total content width for text wrapping
+    /// * `viewport_start` - First line to include (scroll offset)
+    /// * `viewport_height` - Number of lines in the visible viewport
+    fn render_entries(
+        &self,
+        width: usize,
+        viewport_start: usize,
+        viewport_height: usize,
+    ) -> (Vec<Line<'a>>, usize) {
         let content_width = width.saturating_sub(4); // Account for borders and padding
 
-        for entry in self.entries {
+        // Single pass: calculate both start positions AND line counts to avoid redundant work
+        let entry_info: Vec<(usize, usize)> = {
+            let mut info = Vec::with_capacity(self.entries.len());
+            let mut current_line = 0;
+            for entry in self.entries.iter() {
+                let line_count = self.calculate_entry_lines(entry, content_width);
+                info.push((current_line, line_count));
+                current_line += line_count;
+            }
+            info
+        };
+
+        // Determine which entries intersect with viewport (with buffer)
+        let viewport_end = viewport_start + viewport_height;
+        let buffer = viewport_height / 4; // Buffer proportional to viewport height
+        let render_start = viewport_start.saturating_sub(buffer);
+        let render_end = viewport_end + buffer;
+
+        // Find entry range to render using cached line counts
+        let first_entry = entry_info
+            .iter()
+            .position(|(start, count)| start + count > render_start)
+            .unwrap_or(0);
+
+        let last_entry = entry_info
+            .iter()
+            .rposition(|(start, _)| *start < render_end)
+            .map(|i| i + 1)
+            .unwrap_or(self.entries.len())
+            .min(self.entries.len());
+
+        // Render only the visible range
+        let mut lines = Vec::new();
+
+        // Track where in the full content our rendered lines start
+        let render_offset = if first_entry < entry_info.len() {
+            entry_info[first_entry].0 // start line of first rendered entry
+        } else {
+            0
+        };
+
+        for entry in &self.entries.iter().collect::<Vec<_>>()[first_entry..last_entry] {
             match entry {
                 DisplayEntry::UserMessage { text, .. } => {
                     lines.push(Line::from(vec![
@@ -715,7 +1059,7 @@ impl<'a> ConversationView<'a> {
             }
         }
 
-        lines
+        (lines, render_offset)
     }
 }
 
@@ -756,8 +1100,8 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             return;
         }
 
-        let lines = self.render_entries(padded.width as usize);
-        let total_lines = lines.len();
+        // Calculate total lines first for follow mode and scrolling
+        let total_lines = self.calculate_total_lines(padded.width as usize);
 
         // Update state with total lines for scrollbar
         state.total_lines = total_lines;
@@ -771,9 +1115,21 @@ impl<'a> StatefulWidget for ConversationView<'a> {
         let max_scroll = total_lines.saturating_sub(inner.height as usize);
         state.scroll_offset = state.scroll_offset.min(max_scroll);
 
+        // Render entries in viewport range (with small buffer)
+        let (lines, render_offset) = self.render_entries(
+            padded.width as usize,
+            state.scroll_offset,
+            inner.height as usize,
+        );
+
+        // Calculate how many lines to skip from the rendered content
+        // render_offset is where the rendered lines start in the full content
+        let skip_in_rendered = state.scroll_offset.saturating_sub(render_offset);
+
+        // Slice the visible portion from the rendered lines
         let visible_lines: Vec<Line> = lines
             .into_iter()
-            .skip(state.scroll_offset)
+            .skip(skip_in_rendered)
             .take(inner.height as usize)
             .collect();
 

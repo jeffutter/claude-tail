@@ -19,7 +19,7 @@ while true; do
     echo "$tickets_needing_plan"
     echo ""
 
-    result=$(claude --model opus -p "$(cat <<'EOF'
+    result=$(claude --model opus --plugin-dir ~/src/claude-plugin -p "$(cat <<'EOF'
 Plan one ticket that needs planning.
 
 Tickets needing planning:
@@ -74,7 +74,7 @@ EOF
   fi
   echo ""
 
-  result=$(claude -p "$(cat <<'EOF'
+  result=$(claude --plugin-dir ~/src/claude-plugin -p "$(cat <<'EOF'
 Execute one ticket to completion.
 
 In-progress tickets:

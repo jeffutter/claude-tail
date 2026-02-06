@@ -1,6 +1,6 @@
 ---
 id: ct-5fww
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-06T12:21:15Z
