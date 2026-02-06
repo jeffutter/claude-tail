@@ -31,7 +31,7 @@ impl<'a> ProjectList<'a> {
     pub fn max_content_width(projects: &[Project]) -> u16 {
         projects
             .iter()
-            .map(|p| p.abbreviated_path().width() + 2) // +2 for "> " prefix
+            .map(|p| p.display_name_with_timestamp().width() + 2) // +2 for "> " prefix
             .max()
             .unwrap_or(10) as u16
     }
@@ -71,7 +71,7 @@ impl<'a> StatefulWidget for ProjectList<'a> {
                 };
 
                 ListItem::new(Line::from(vec![Span::styled(
-                    format!("{}{}", prefix, project.abbreviated_path()),
+                    format!("{}{}", prefix, project.display_name_with_timestamp()),
                     style,
                 )]))
             })

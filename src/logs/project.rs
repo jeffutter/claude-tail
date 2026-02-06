@@ -14,9 +14,21 @@ pub struct Project {
     pub path: PathBuf,
     pub encoded_path: String,
     pub original_path: PathBuf,
+    pub last_modified: SystemTime,
 }
 
 impl Project {
+    /// Returns the timestamp formatted as HH:MM:SS
+    pub fn timestamp_str(&self) -> String {
+        let datetime: DateTime<Local> = self.last_modified.into();
+        datetime.format("%H:%M:%S").to_string()
+    }
+
+    /// Returns display string with timestamp: "abbreviated_path (HH:MM:SS)"
+    pub fn display_name_with_timestamp(&self) -> String {
+        format!("{} ({})", self.abbreviated_path(), self.timestamp_str())
+    }
+
     /// Returns an abbreviated path like `~/s/c/my-project`
     pub fn abbreviated_path(&self) -> String {
         let path_str = self.original_path.to_string_lossy();
@@ -115,6 +127,36 @@ pub fn get_claude_projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("projects"))
 }
 
+/// Computes the last modified time for a project by finding the most recent
+/// session JSONL file. Falls back to the project directory's mtime if no sessions exist.
+fn compute_project_last_modified(project_path: &Path) -> SystemTime {
+    let mut max_modified = SystemTime::UNIX_EPOCH;
+
+    // Scan for JSONL files in the project directory
+    if let Ok(entries) = std::fs::read_dir(project_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified()
+                && modified > max_modified
+            {
+                max_modified = modified;
+            }
+        }
+    }
+
+    // If no sessions found, use the project directory's mtime
+    if max_modified == SystemTime::UNIX_EPOCH
+        && let Ok(metadata) = std::fs::metadata(project_path)
+        && let Ok(modified) = metadata.modified()
+    {
+        return modified;
+    }
+
+    max_modified
+}
+
 pub fn discover_projects() -> Result<Vec<Project>> {
     let projects_dir = get_claude_projects_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
@@ -150,16 +192,21 @@ pub fn discover_projects() -> Result<Vec<Project>> {
                 .unwrap_or(&encoded_path)
                 .to_string();
 
+            // Compute last_modified from session JSONL files
+            let last_modified = compute_project_last_modified(&path);
+
             projects.push(Project {
                 name,
                 path,
                 encoded_path,
                 original_path,
+                last_modified,
             });
         }
     }
 
-    projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    // Sort by last modified, newest first
+    projects.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
     Ok(projects)
 }
 

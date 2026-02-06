@@ -1,6 +1,6 @@
 ---
 id: ct-pcrq
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-06T04:20:28Z
@@ -72,3 +72,9 @@ design: |
 
 Similar to the other lists, show the last updated time for every project entry and sort the list with the most recent activity first
 
+
+## Notes
+
+**2026-02-06T04:55:09Z**
+
+Fixed naming inconsistency: renamed Agent::display_with_timestamp() to display_name_with_timestamp() for consistency across Project, Session, and Agent types

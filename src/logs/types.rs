@@ -165,7 +165,7 @@ impl Agent {
     }
 
     /// Returns display string with timestamp: "name (HH:MM:SS)"
-    pub fn display_with_timestamp(&self) -> String {
+    pub fn display_name_with_timestamp(&self) -> String {
         format!("{} ({})", self.display_name, self.timestamp_str())
     }
 }

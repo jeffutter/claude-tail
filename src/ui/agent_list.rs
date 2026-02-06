@@ -31,7 +31,7 @@ impl<'a> AgentList<'a> {
     pub fn max_content_width(agents: &[Agent]) -> u16 {
         agents
             .iter()
-            .map(|a| a.display_with_timestamp().width() + 2) // +2 for "> " prefix
+            .map(|a| a.display_name_with_timestamp().width() + 2) // +2 for "> " prefix
             .max()
             .unwrap_or(10) as u16
     }
@@ -75,7 +75,7 @@ impl<'a> StatefulWidget for AgentList<'a> {
                 };
 
                 ListItem::new(Line::from(vec![Span::styled(
-                    format!("{}{}", prefix, agent.display_with_timestamp()),
+                    format!("{}{}", prefix, agent.display_name_with_timestamp()),
                     style,
                 )]))
             })
