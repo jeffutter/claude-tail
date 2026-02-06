@@ -156,7 +156,7 @@ fn get_last_jsonl_timestamp(path: &Path) -> SystemTime {
                 let reader = BufReader::new(file);
 
                 // Collect lines from the tail
-                let lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
+                let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
                 // Find last non-empty line
                 if let Some(last_line) = lines.iter().rev().find(|l| !l.trim().is_empty()) {
