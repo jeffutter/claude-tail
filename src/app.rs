@@ -75,10 +75,12 @@ pub struct App {
     pub discovery_rx: mpsc::UnboundedReceiver<DiscoveryMessage>,
     /// Channel sender for async discovery results
     discovery_tx: mpsc::UnboundedSender<DiscoveryMessage>,
+    /// Whether to automatically switch to most recent project/session/agent
+    pub super_follow_enabled: bool,
 }
 
 impl App {
-    pub fn new(theme: Theme) -> Result<Self> {
+    pub fn new(theme: Theme, super_follow_enabled: bool) -> Result<Self> {
         let projects = discover_projects().unwrap_or_default();
         let sessions = if !projects.is_empty() {
             discover_sessions(&projects[0]).unwrap_or_default()
@@ -115,6 +117,7 @@ impl App {
             is_refreshing: false,
             discovery_rx,
             discovery_tx,
+            super_follow_enabled,
         };
 
         // Load initial agents and conversation if there's a session
@@ -526,12 +529,42 @@ impl App {
             .and_then(|idx| self.agents.get(idx))
             .map(|a| a.display_name.as_str())
     }
+
+    /// Automatically switch to the project/session/agent with most recent activity
+    /// Only operates if super_follow_enabled is true
+    pub fn auto_switch_to_most_recent(&mut self) {
+        if !self.super_follow_enabled {
+            return;
+        }
+
+        // Projects are already sorted by last_modified descending, so most recent is at index 0
+        if !self.projects.is_empty() && self.project_state.selected() != Some(0) {
+            self.project_state.select(Some(0));
+            self.load_sessions_for_selected_project();
+        }
+
+        // Sessions are already sorted by last_modified descending, so most recent is at index 0
+        if !self.sessions.is_empty() && self.session_state.selected() != Some(0) {
+            self.session_state.select(Some(0));
+            self.load_agents_for_selected_session();
+        }
+
+        // For agents, prefer the first sub-agent (index 1) if it exists, otherwise main agent (index 0)
+        // Agents list has main agent at 0, followed by sub-agents sorted by last_modified
+        if !self.agents.is_empty() {
+            let target_idx = if self.agents.len() > 1 { 1 } else { 0 };
+            if self.agent_state.selected() != Some(target_idx) {
+                self.agent_state.select(Some(target_idx));
+                self.load_conversation_for_selected_agent();
+            }
+        }
+    }
 }
 
 impl Default for App {
     fn default() -> Self {
         // Infallible - returns empty state on error
-        Self::new(Theme::default()).unwrap_or_else(|_| {
+        Self::new(Theme::default(), false).unwrap_or_else(|_| {
             let (parse_tx, parse_rx) = mpsc::unbounded_channel();
             let (discovery_tx, discovery_rx) = mpsc::unbounded_channel();
             Self {
@@ -560,6 +593,7 @@ impl Default for App {
                 is_refreshing: false,
                 discovery_rx,
                 discovery_tx,
+                super_follow_enabled: false,
             }
         })
     }

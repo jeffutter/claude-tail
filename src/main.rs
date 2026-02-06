@@ -41,6 +41,10 @@ struct Args {
     /// List available themes and exit
     #[arg(long)]
     list_themes: bool,
+
+    /// Enable automatic switching to project/session/agent with most recent activity
+    #[arg(short = 's', long)]
+    super_follow: bool,
 }
 
 #[tokio::main]
@@ -73,7 +77,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = App::new(theme)?;
+    let mut app = App::new(theme, args.super_follow)?;
 
     // Run main loop
     let result = run_app(&mut terminal, &mut app).await;
@@ -144,9 +148,11 @@ where
                 match msg {
                     app::DiscoveryMessage::ProjectsDiscovered(result) => {
                         app.handle_projects_discovered(result);
+                        app.auto_switch_to_most_recent();
                     }
                     app::DiscoveryMessage::SessionsDiscovered { project_path, result } => {
                         app.handle_sessions_discovered(project_path, result);
+                        app.auto_switch_to_most_recent();
                     }
                 }
             }
@@ -155,6 +161,7 @@ where
             _ = list_refresh_interval.tick() => {
                 app.refresh_projects();
                 app.refresh_sessions();
+                // Note: auto_switch will be called when discovery completes
             }
         }
     }

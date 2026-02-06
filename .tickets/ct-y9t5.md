@@ -1,6 +1,6 @@
 ---
 id: ct-y9t5
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-06T12:34:55Z
