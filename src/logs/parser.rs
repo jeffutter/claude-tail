@@ -456,16 +456,12 @@ fn extract_tool_result_content(content: Option<&serde_json::Value>) -> String {
 /// Merge ToolResult entries into their preceding ToolCall entries when they match by ID.
 /// This creates a cleaner display where results appear inline with their commands.
 /// Results that don't immediately follow their call are kept separate.
-pub fn merge_tool_results(entries: Vec<DisplayEntry>) -> Vec<DisplayEntry> {
+pub fn merge_tool_results(mut entries: Vec<DisplayEntry>) -> Vec<DisplayEntry> {
     let mut result = Vec::with_capacity(entries.len());
-    let mut skip_next = false;
+    let mut iter = entries.drain(..);
+    let mut next_entry = iter.next();
 
-    for (i, entry) in entries.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-
+    while let Some(entry) = next_entry.take() {
         match entry {
             DisplayEntry::ToolCall {
                 id,
@@ -474,39 +470,42 @@ pub fn merge_tool_results(entries: Vec<DisplayEntry>) -> Vec<DisplayEntry> {
                 timestamp,
                 result: _,
             } => {
-                // Look ahead for a matching ToolResult
-                let merged_result = entries.get(i + 1).and_then(|next| {
-                    if let DisplayEntry::ToolResult {
-                        tool_use_id,
-                        content,
-                        is_error,
-                        ..
-                    } = next
-                    {
-                        if tool_use_id == id {
-                            skip_next = true;
-                            Some(ToolCallResult {
-                                content: content.clone(),
-                                is_error: *is_error,
-                            })
-                        } else {
-                            None
-                        }
+                // Peek at next entry for a matching ToolResult
+                next_entry = iter.next();
+                let merged_result = if let Some(DisplayEntry::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                    ..
+                }) = &next_entry
+                {
+                    if tool_use_id == &id {
+                        // Consume the result entry by extracting its data
+                        // (content must be cloned since we're peeking at next_entry)
+                        let consumed_result = Some(ToolCallResult {
+                            content: content.clone(),
+                            is_error: *is_error,
+                        });
+                        next_entry = iter.next(); // Skip the consumed result
+                        consumed_result
                     } else {
                         None
                     }
-                });
+                } else {
+                    None
+                };
 
                 result.push(DisplayEntry::ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    timestamp: *timestamp,
+                    id,
+                    name,
+                    input,
+                    timestamp,
                     result: merged_result,
                 });
             }
-            _ => {
-                result.push(entry.clone());
+            other => {
+                result.push(other);
+                next_entry = iter.next();
             }
         }
     }
