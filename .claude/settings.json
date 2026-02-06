@@ -4,7 +4,8 @@
       "Bash(cargo build:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo fmt:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(lefthook:*)"
     ]
   },
   "hooks": {
@@ -14,11 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cargo fmt"
-          },
-          {
-            "type": "command",
-            "command": "cargo clippy --all-targets --all-features --workspace --fix --allow-dirty"
+            "command": "LEFTHOOK_OUTPUT=\"failure\" lefthook run pre-commit --no-tty"
           }
         ]
       }

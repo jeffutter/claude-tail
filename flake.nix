@@ -36,6 +36,7 @@
             vhs
             rustToolchain
             pkg-config
+            lefthook
           ];
         };
 
