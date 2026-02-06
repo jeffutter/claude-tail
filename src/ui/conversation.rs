@@ -7,13 +7,14 @@ use ratatui::{
         Widget,
     },
 };
+use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
 
 use super::styles::Theme;
 use crate::logs::{DisplayEntry, ToolCallResult};
 
 pub struct ConversationView<'a> {
-    entries: &'a [DisplayEntry],
+    entries: &'a VecDeque<DisplayEntry>,
     focused: bool,
     theme: &'a Theme,
     show_thinking: bool,
@@ -23,7 +24,7 @@ pub struct ConversationView<'a> {
 
 impl<'a> ConversationView<'a> {
     pub fn new(
-        entries: &'a [DisplayEntry],
+        entries: &'a VecDeque<DisplayEntry>,
         focused: bool,
         theme: &'a Theme,
         show_thinking: bool,

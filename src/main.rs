@@ -223,11 +223,9 @@ fn draw(frame: &mut Frame, app: &mut App) {
     );
 
     // Draw conversation pane
-    // VecDeque needs to be made contiguous to get a slice for the view
-    let conversation_entries = app.conversation.make_contiguous();
     let conversation_focused = app.focus == app::FocusPane::Conversation;
     let conversation_view = ConversationView::new(
-        conversation_entries,
+        &app.conversation,
         conversation_focused,
         &app.theme,
         app.show_thinking,

@@ -1,6 +1,6 @@
 ---
 id: ct-5z3c
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-06T12:21:08Z
