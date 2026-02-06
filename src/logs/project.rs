@@ -362,6 +362,26 @@ impl Session {
         }
     }
 
+    /// Returns display name without timestamp: "summary" or "id..."
+    pub fn display_name_without_timestamp(&self) -> String {
+        if let Some(ref summary) = self.summary {
+            // Truncate long summaries (respecting char boundaries)
+            if summary.len() > 40 {
+                let truncate_at = summary
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 37)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(summary.len());
+                format!("{}...", &summary[..truncate_at])
+            } else {
+                summary.clone()
+            }
+        } else {
+            self.short_id()
+        }
+    }
+
     /// Returns display name with timestamp: "summary (HH:MM:SS)" or "id... (HH:MM:SS)"
     pub fn display_name(&self) -> String {
         let timestamp = self.timestamp_str();

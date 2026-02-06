@@ -57,6 +57,9 @@ impl<'a> StatefulWidget for SessionList<'a> {
             return;
         }
 
+        // Calculate available width for right-aligning timestamps
+        let available_width = area.width.saturating_sub(2); // Subtract borders
+
         let items: Vec<ListItem> = self
             .sessions
             .iter()
@@ -70,10 +73,24 @@ impl<'a> StatefulWidget for SessionList<'a> {
                     ratatui::style::Style::default()
                 };
 
-                ListItem::new(Line::from(vec![Span::styled(
-                    format!("{}{}", prefix, session.display_name()),
-                    style,
-                )]))
+                // Build multi-span line with right-aligned timestamp
+                let label = format!("{}{}", prefix, session.display_name_without_timestamp());
+                let timestamp = format!("({})", session.timestamp_str());
+
+                let label_width = label.width();
+                let timestamp_width = timestamp.width();
+                let padding_width = available_width
+                    .saturating_sub(label_width as u16)
+                    .saturating_sub(timestamp_width as u16);
+
+                ListItem::new(Line::from(vec![
+                    Span::styled(label, style),
+                    Span::styled(
+                        " ".repeat(padding_width as usize),
+                        ratatui::style::Style::default(),
+                    ),
+                    Span::styled(timestamp, self.theme.timestamp),
+                ]))
             })
             .collect();
 

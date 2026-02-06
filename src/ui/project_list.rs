@@ -57,6 +57,9 @@ impl<'a> StatefulWidget for ProjectList<'a> {
             return;
         }
 
+        // Calculate available width for right-aligning timestamps
+        let available_width = area.width.saturating_sub(2); // Subtract borders
+
         let items: Vec<ListItem> = self
             .projects
             .iter()
@@ -70,10 +73,24 @@ impl<'a> StatefulWidget for ProjectList<'a> {
                     ratatui::style::Style::default()
                 };
 
-                ListItem::new(Line::from(vec![Span::styled(
-                    format!("{}{}", prefix, project.display_name_with_timestamp()),
-                    style,
-                )]))
+                // Build multi-span line with right-aligned timestamp
+                let label = format!("{}{}", prefix, project.abbreviated_path());
+                let timestamp = format!("({})", project.timestamp_str());
+
+                let label_width = label.width();
+                let timestamp_width = timestamp.width();
+                let padding_width = available_width
+                    .saturating_sub(label_width as u16)
+                    .saturating_sub(timestamp_width as u16);
+
+                ListItem::new(Line::from(vec![
+                    Span::styled(label, style),
+                    Span::styled(
+                        " ".repeat(padding_width as usize),
+                        ratatui::style::Style::default(),
+                    ),
+                    Span::styled(timestamp, self.theme.timestamp),
+                ]))
             })
             .collect();
 

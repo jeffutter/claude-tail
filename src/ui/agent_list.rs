@@ -57,6 +57,9 @@ impl<'a> StatefulWidget for AgentList<'a> {
             return;
         }
 
+        // Calculate available width for right-aligning timestamps
+        let available_width = area.width.saturating_sub(2); // Subtract borders
+
         let items: Vec<ListItem> = self
             .agents
             .iter()
@@ -66,7 +69,7 @@ impl<'a> StatefulWidget for AgentList<'a> {
                 let prefix = if is_selected { "> " } else { "  " };
 
                 // Use different style for main agent
-                let style = if is_selected {
+                let label_style = if is_selected {
                     self.theme.selected
                 } else if agent.is_main {
                     self.theme.title // Main agent gets title styling
@@ -74,10 +77,24 @@ impl<'a> StatefulWidget for AgentList<'a> {
                     ratatui::style::Style::default()
                 };
 
-                ListItem::new(Line::from(vec![Span::styled(
-                    format!("{}{}", prefix, agent.display_name_with_timestamp()),
-                    style,
-                )]))
+                // Build multi-span line with right-aligned timestamp
+                let label = format!("{}{}", prefix, agent.display_name);
+                let timestamp = format!("({})", agent.timestamp_str());
+
+                let label_width = label.width();
+                let timestamp_width = timestamp.width();
+                let padding_width = available_width
+                    .saturating_sub(label_width as u16)
+                    .saturating_sub(timestamp_width as u16);
+
+                ListItem::new(Line::from(vec![
+                    Span::styled(label, label_style),
+                    Span::styled(
+                        " ".repeat(padding_width as usize),
+                        ratatui::style::Style::default(),
+                    ),
+                    Span::styled(timestamp, self.theme.timestamp),
+                ]))
             })
             .collect();
 
