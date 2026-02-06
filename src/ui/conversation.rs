@@ -60,6 +60,7 @@ impl<'a> ConversationView<'a> {
             "Grep" => self.render_grep_tool(lines, parsed.as_ref(), content_width),
             "Glob" => self.render_glob_tool(lines, parsed.as_ref(), content_width),
             "Task" => self.render_task_tool(lines, parsed.as_ref(), content_width),
+            "TodoWrite" => self.render_todowrite_tool(lines, parsed.as_ref(), content_width),
             _ => self.render_generic_tool(lines, name, input, content_width),
         }
 
@@ -457,6 +458,85 @@ impl<'a> ConversationView<'a> {
                     format!("  {}", line),
                     self.theme.thinking,
                 )));
+            }
+        }
+    }
+
+    fn render_todowrite_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) {
+        let todos = parsed
+            .and_then(|v| v.get("todos"))
+            .and_then(|v| v.as_array());
+
+        let total = todos.map(|t| t.len()).unwrap_or(0);
+
+        // Count by status
+        let (pending, in_progress, completed) = if let Some(items) = todos {
+            items.iter().fold((0, 0, 0), |(p, ip, c), item| {
+                match item.get("status").and_then(|s| s.as_str()) {
+                    Some("completed") => (p, ip, c + 1),
+                    Some("in_progress") => (p, ip + 1, c),
+                    _ => (p + 1, ip, c),
+                }
+            })
+        } else {
+            (0, 0, 0)
+        };
+
+        // Header line with status summary
+        let mut header_spans = vec![
+            Span::styled("Todo ", self.theme.tool_name),
+            Span::styled(format!("({})", total), self.theme.thinking_collapsed),
+        ];
+
+        if total > 0 {
+            header_spans.push(Span::styled(": ", self.theme.tool_name));
+            let mut summary_parts = Vec::new();
+            if pending > 0 {
+                summary_parts.push(format!("{} pending", pending));
+            }
+            if in_progress > 0 {
+                summary_parts.push(format!("{} in progress", in_progress));
+            }
+            if completed > 0 {
+                summary_parts.push(format!("{} completed", completed));
+            }
+            header_spans.push(Span::styled(
+                summary_parts.join(", "),
+                self.theme.thinking_collapsed,
+            ));
+        }
+
+        lines.push(Line::from(header_spans));
+
+        // Expanded: show each todo item
+        if self.expand_tools
+            && let Some(items) = todos
+        {
+            for item in items {
+                let status = item
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("pending");
+                let content = item.get("content").and_then(|c| c.as_str()).unwrap_or("");
+
+                let (symbol, style) = match status {
+                    "completed" => ("✓", self.theme.tool_result),
+                    "in_progress" => ("◐", self.theme.tool_name),
+                    _ => ("○", self.theme.tool_input),
+                };
+
+                let truncated = truncate_line(content, content_width.saturating_sub(6));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(symbol, style),
+                    Span::raw(" "),
+                    Span::styled(truncated, style),
+                ]));
             }
         }
     }
