@@ -128,26 +128,54 @@ pub fn get_claude_projects_dir() -> Option<PathBuf> {
 }
 
 /// Extracts the timestamp of the last entry in a JSONL file.
-/// Falls back to file mtime if parsing fails or no timestamp exists.
+///
+/// Reads the tail of the file and parses the `timestamp` field from the last non-empty line.
+/// This provides accurate sorting based on actual activity rather than file system metadata.
+///
+/// # Performance
+/// Reads only the last 8KB of the file to avoid loading large files into memory.
+/// This is sufficient to find the last JSONL entry in most cases.
+///
+/// # Fallback
+/// Returns file modification time if:
+/// - File cannot be read
+/// - No non-empty lines exist in the tail
+/// - JSON parsing fails
+/// - Timestamp field is missing or invalid
 fn get_last_jsonl_timestamp(path: &Path) -> SystemTime {
-    // Try to read the file and parse the last entry's timestamp
-    if let Ok(content) = std::fs::read_to_string(path) {
-        // Find the last non-empty line
-        if let Some(last_line) = content.lines().rfind(|l| !l.trim().is_empty()) {
-            // Try to parse as a minimal JSON object with just the timestamp field
-            #[derive(Deserialize)]
-            struct TimestampOnly {
-                timestamp: Option<DateTime<Utc>>,
-            }
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
-            if let Ok(entry) = serde_json::from_str::<TimestampOnly>(last_line) {
-                // Extract timestamp and convert to SystemTime
-                if let Some(timestamp) = entry.timestamp {
-                    // Convert DateTime<Utc> to SystemTime
-                    let duration_since_epoch =
-                        timestamp.signed_duration_since(DateTime::UNIX_EPOCH);
-                    if let Ok(std_duration) = duration_since_epoch.to_std() {
-                        return SystemTime::UNIX_EPOCH + std_duration;
+    // Try to read from the end of the file
+    if let Ok(mut file) = File::open(path) {
+        // Seek to end and work backwards
+        if let Ok(file_len) = file.seek(SeekFrom::End(0)) {
+            // Read last ~8KB (enough for several JSONL entries)
+            let read_size = std::cmp::min(file_len, 8192);
+            if file.seek(SeekFrom::End(-(read_size as i64))).is_ok() {
+                let reader = BufReader::new(file);
+
+                // Collect lines from the tail
+                let lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
+
+                // Find last non-empty line
+                if let Some(last_line) = lines.iter().rev().find(|l| !l.trim().is_empty()) {
+                    // Try to parse as a minimal JSON object with just the timestamp field
+                    #[derive(Deserialize)]
+                    struct TimestampOnly {
+                        timestamp: Option<DateTime<Utc>>,
+                    }
+
+                    if let Ok(entry) = serde_json::from_str::<TimestampOnly>(last_line) {
+                        // Extract timestamp and convert to SystemTime
+                        if let Some(timestamp) = entry.timestamp {
+                            // Convert DateTime<Utc> to SystemTime
+                            let duration_since_epoch =
+                                timestamp.signed_duration_since(DateTime::UNIX_EPOCH);
+                            if let Ok(std_duration) = duration_since_epoch.to_std() {
+                                return SystemTime::UNIX_EPOCH + std_duration;
+                            }
+                        }
                     }
                 }
             }
