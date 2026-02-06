@@ -5,6 +5,12 @@
       "Bash(cargo clippy:*)",
       "Bash(cargo fmt:*)",
       "Bash(find:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git diff:*)",
+      "Bash(git stash:*)",
+      "Bash(git status:*)",
+      "Bash(tk:*)",
       "Bash(lefthook:*)"
     ]
   },
