@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use crate::logs::{
     Agent, DisplayEntry, ParseResult, Project, Session, SessionWatcher, discover_agents,
     discover_projects, discover_sessions, merge_tool_results, parse_jsonl_file_async,
+    parse_jsonl_from_position_async,
 };
 use crate::ui::{AgentListState, ConversationState, ProjectListState, SessionListState, Theme};
 
@@ -68,6 +69,8 @@ pub struct App {
     pub is_parsing: bool,
     /// Path of the file currently being parsed
     pub parsing_path: Option<PathBuf>,
+    /// Whether a refresh operation is currently in progress
+    pub is_refreshing: bool,
     /// Channel receiver for async discovery results
     pub discovery_rx: mpsc::UnboundedReceiver<DiscoveryMessage>,
     /// Channel sender for async discovery results
@@ -109,6 +112,7 @@ impl App {
             parse_tx,
             is_parsing: false,
             parsing_path: None,
+            is_refreshing: false,
             discovery_rx,
             discovery_tx,
         };
@@ -339,6 +343,11 @@ impl App {
     }
 
     pub fn load_conversation_for_selected_agent(&mut self) {
+        // Prevent duplicate parses
+        if self.is_parsing {
+            return;
+        }
+
         self.watcher.stop();
         self.entries_truncated = 0;
         self.parse_errors.clear();
@@ -372,13 +381,26 @@ impl App {
 
     /// Handle completed parse result from async task
     pub fn handle_parse_complete(&mut self, path: PathBuf, result: Result<ParseResult>) {
-        // Only process if this is the most recent parse request
-        if self.parsing_path.as_ref() != Some(&path) {
+        // Determine if this is an initial parse or incremental refresh
+        // Invariant: Only one of these can be true at a time
+        //   - is_parsing: true during initial load (parsing_path == path)
+        //   - is_refreshing: true during incremental refresh (watcher path == path)
+        let is_initial = self.is_parsing && self.parsing_path.as_ref() == Some(&path);
+        let is_refresh = self.is_refreshing && self.watcher.current_path() == Some(&path);
+
+        // Only process if this is a valid parse request (either initial or refresh)
+        if !is_initial && !is_refresh {
             return;
         }
 
-        self.is_parsing = false;
-        self.parsing_path = None;
+        // Clear the appropriate state flag
+        if is_initial {
+            self.is_parsing = false;
+            self.parsing_path = None;
+        }
+        if is_refresh {
+            self.is_refreshing = false;
+        }
 
         match result {
             Ok(ParseResult {
@@ -386,49 +408,29 @@ impl App {
                 errors,
                 bytes_read,
             }) => {
-                let merged = merge_tool_results(entries);
-                self.conversation = VecDeque::from(merged);
-                self.parse_errors = errors;
-                self.apply_conversation_limit();
-                self.conversation_state = ConversationState::new();
-                self.error_message = None;
+                if is_initial {
+                    // Initial load: replace conversation entirely
+                    let merged = merge_tool_results(entries);
+                    self.conversation = VecDeque::from(merged);
+                    self.parse_errors = errors;
+                    self.apply_conversation_limit();
+                    self.conversation_state = ConversationState::new();
+                    self.error_message = None;
 
-                // Start watching from where we left off
-                if let Err(e) = self.watcher.watch(path) {
-                    self.error_message = Some(format!("Failed to watch file: {}", e));
-                } else {
+                    // Start watching from where we left off
+                    if let Err(e) = self.watcher.watch(path) {
+                        self.error_message = Some(format!("Failed to watch file: {}", e));
+                    } else {
+                        self.watcher.set_file_position(bytes_read);
+                    }
+                } else if is_refresh {
+                    // Incremental refresh: append new entries
                     self.watcher.set_file_position(bytes_read);
-                }
-            }
-            Err(e) => {
-                self.error_message = Some(format!("Failed to load conversation: {}", e));
-                self.conversation.clear();
-            }
-        }
-    }
-
-    /// Enforce MAX_CONVERSATION_ENTRIES limit by dropping oldest entries
-    fn apply_conversation_limit(&mut self) {
-        while self.conversation.len() > MAX_CONVERSATION_ENTRIES {
-            self.conversation.pop_front();
-            self.entries_truncated += 1;
-        }
-    }
-
-    pub fn refresh_conversation(&mut self) {
-        if let Some(path) = self.watcher.current_path().cloned() {
-            match crate::logs::parse_jsonl_from_position(&path, self.watcher.file_position()) {
-                Ok(ParseResult {
-                    entries: new_entries,
-                    errors,
-                    bytes_read: new_pos,
-                }) => {
-                    self.watcher.set_file_position(new_pos);
                     self.parse_errors.extend(errors);
 
-                    if !new_entries.is_empty() {
+                    if !entries.is_empty() {
                         // Merge new entries (handles results within the new batch)
-                        let merged_new = merge_tool_results(new_entries);
+                        let merged_new = merge_tool_results(entries);
 
                         // Check if last existing entry is a ToolCall that needs its result
                         // merged from the first new entry
@@ -457,10 +459,42 @@ impl App {
                         self.apply_conversation_limit();
                     }
                 }
-                Err(e) => {
+            }
+            Err(e) => {
+                if is_initial {
+                    self.error_message = Some(format!("Failed to load conversation: {}", e));
+                    self.conversation.clear();
+                } else if is_refresh {
                     self.error_message = Some(format!("Failed to refresh: {}", e));
                 }
             }
+        }
+    }
+
+    /// Enforce MAX_CONVERSATION_ENTRIES limit by dropping oldest entries
+    fn apply_conversation_limit(&mut self) {
+        while self.conversation.len() > MAX_CONVERSATION_ENTRIES {
+            self.conversation.pop_front();
+            self.entries_truncated += 1;
+        }
+    }
+
+    pub fn refresh_conversation(&mut self) {
+        // Prevent duplicate refreshes
+        if self.is_refreshing {
+            return;
+        }
+
+        if let Some(path) = self.watcher.current_path().cloned() {
+            let position = self.watcher.file_position();
+            self.is_refreshing = true;
+
+            // Spawn async parsing task
+            let tx = self.parse_tx.clone();
+            tokio::spawn(async move {
+                let result = parse_jsonl_from_position_async(path.clone(), position).await;
+                let _ = tx.send(ParseMessage::Complete { path, result });
+            });
         }
     }
 
@@ -523,6 +557,7 @@ impl Default for App {
                 parse_tx,
                 is_parsing: false,
                 parsing_path: None,
+                is_refreshing: false,
                 discovery_rx,
                 discovery_tx,
             }
