@@ -130,6 +130,15 @@ where
                 }
             }
 
+            // Handle async parse completion
+            Some(msg) = app.parse_rx.recv() => {
+                match msg {
+                    app::ParseMessage::Complete { path, result } => {
+                        app.handle_parse_complete(path, result);
+                    }
+                }
+            }
+
             // Periodically refresh projects and sessions lists
             _ = list_refresh_interval.tick() => {
                 app.refresh_projects();
@@ -223,6 +232,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         &app.theme,
         app.show_thinking,
         app.expand_tools,
+        app.is_parsing,
     );
     StatefulWidget::render(
         conversation_view,

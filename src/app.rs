@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use anyhow::Result;
+use tokio::sync::mpsc;
 
 use crate::logs::{
     Agent, DisplayEntry, ParseResult, Project, Session, SessionWatcher, discover_agents,
-    discover_projects, discover_sessions, merge_tool_results, parse_jsonl_file,
+    discover_projects, discover_sessions, merge_tool_results, parse_jsonl_file_async,
 };
 use crate::ui::{AgentListState, ConversationState, ProjectListState, SessionListState, Theme};
 
@@ -18,6 +20,14 @@ pub enum FocusPane {
     Sessions,
     Agents,
     Conversation,
+}
+
+/// Message sent when async parsing completes
+pub enum ParseMessage {
+    Complete {
+        path: PathBuf,
+        result: Result<ParseResult>,
+    },
 }
 
 pub struct App {
@@ -41,6 +51,14 @@ pub struct App {
     pub entries_truncated: usize,
     /// Parse errors encountered (line number and error message)
     pub parse_errors: Vec<String>,
+    /// Channel receiver for async parse results
+    pub parse_rx: mpsc::UnboundedReceiver<ParseMessage>,
+    /// Channel sender for async parse results
+    parse_tx: mpsc::UnboundedSender<ParseMessage>,
+    /// Whether a parse operation is currently in progress
+    pub is_parsing: bool,
+    /// Path of the file currently being parsed
+    pub parsing_path: Option<PathBuf>,
 }
 
 impl App {
@@ -51,6 +69,8 @@ impl App {
         } else {
             Vec::new()
         };
+
+        let (parse_tx, parse_rx) = mpsc::unbounded_channel();
 
         let mut app = Self {
             focus: FocusPane::Projects,
@@ -71,6 +91,10 @@ impl App {
             error_message: None,
             entries_truncated: 0,
             parse_errors: Vec::new(),
+            parse_rx,
+            parse_tx,
+            is_parsing: false,
+            parsing_path: None,
         };
 
         // Load initial agents and conversation if there's a session
@@ -273,33 +297,59 @@ impl App {
             .map(|agent| agent.log_path.clone());
 
         if let Some(path) = log_path {
-            match parse_jsonl_file(&path) {
-                Ok(ParseResult {
-                    entries,
-                    errors,
-                    bytes_read,
-                }) => {
-                    let merged = merge_tool_results(entries);
-                    self.conversation = VecDeque::from(merged);
-                    self.parse_errors = errors;
-                    self.apply_conversation_limit();
-                    self.conversation_state = ConversationState::new();
-                    self.error_message = None;
+            // Mark as loading and clear previous conversation
+            self.is_parsing = true;
+            self.parsing_path = Some(path.clone());
+            self.conversation.clear();
+            self.error_message = None;
 
-                    // Start watching from where we left off (fixes efficiency bug)
-                    if let Err(e) = self.watcher.watch(path) {
-                        self.error_message = Some(format!("Failed to watch file: {}", e));
-                    } else {
-                        self.watcher.set_file_position(bytes_read);
-                    }
-                }
-                Err(e) => {
-                    self.error_message = Some(format!("Failed to load conversation: {}", e));
-                    self.conversation.clear();
-                }
-            }
+            // Spawn async parsing task
+            let tx = self.parse_tx.clone();
+            tokio::spawn(async move {
+                let result = parse_jsonl_file_async(path.clone()).await;
+                let _ = tx.send(ParseMessage::Complete { path, result });
+            });
         } else {
             self.conversation.clear();
+            self.is_parsing = false;
+            self.parsing_path = None;
+        }
+    }
+
+    /// Handle completed parse result from async task
+    pub fn handle_parse_complete(&mut self, path: PathBuf, result: Result<ParseResult>) {
+        // Only process if this is the most recent parse request
+        if self.parsing_path.as_ref() != Some(&path) {
+            return;
+        }
+
+        self.is_parsing = false;
+        self.parsing_path = None;
+
+        match result {
+            Ok(ParseResult {
+                entries,
+                errors,
+                bytes_read,
+            }) => {
+                let merged = merge_tool_results(entries);
+                self.conversation = VecDeque::from(merged);
+                self.parse_errors = errors;
+                self.apply_conversation_limit();
+                self.conversation_state = ConversationState::new();
+                self.error_message = None;
+
+                // Start watching from where we left off
+                if let Err(e) = self.watcher.watch(path) {
+                    self.error_message = Some(format!("Failed to watch file: {}", e));
+                } else {
+                    self.watcher.set_file_position(bytes_read);
+                }
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to load conversation: {}", e));
+                self.conversation.clear();
+            }
         }
     }
 
@@ -393,25 +443,32 @@ impl App {
 impl Default for App {
     fn default() -> Self {
         // Infallible - returns empty state on error
-        Self::new(Theme::default()).unwrap_or_else(|_| Self {
-            focus: FocusPane::Projects,
-            projects: Vec::new(),
-            sessions: Vec::new(),
-            agents: Vec::new(),
-            conversation: VecDeque::new(),
-            project_state: ProjectListState::new(),
-            session_state: SessionListState::new(),
-            agent_state: AgentListState::new(),
-            conversation_state: ConversationState::new(),
-            theme: Theme::default(),
-            watcher: SessionWatcher::new(),
-            show_thinking: false,
-            expand_tools: true,
-            show_help: false,
-            viewport_height: None,
-            error_message: Some("Failed to initialize application".to_string()),
-            entries_truncated: 0,
-            parse_errors: Vec::new(),
+        Self::new(Theme::default()).unwrap_or_else(|_| {
+            let (parse_tx, parse_rx) = mpsc::unbounded_channel();
+            Self {
+                focus: FocusPane::Projects,
+                projects: Vec::new(),
+                sessions: Vec::new(),
+                agents: Vec::new(),
+                conversation: VecDeque::new(),
+                project_state: ProjectListState::new(),
+                session_state: SessionListState::new(),
+                agent_state: AgentListState::new(),
+                conversation_state: ConversationState::new(),
+                theme: Theme::default(),
+                watcher: SessionWatcher::new(),
+                show_thinking: false,
+                expand_tools: true,
+                show_help: false,
+                viewport_height: None,
+                error_message: Some("Failed to initialize application".to_string()),
+                entries_truncated: 0,
+                parse_errors: Vec::new(),
+                parse_rx,
+                parse_tx,
+                is_parsing: false,
+                parsing_path: None,
+            }
         })
     }
 }

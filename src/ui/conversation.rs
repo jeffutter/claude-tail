@@ -18,6 +18,7 @@ pub struct ConversationView<'a> {
     theme: &'a Theme,
     show_thinking: bool,
     expand_tools: bool,
+    is_loading: bool,
 }
 
 impl<'a> ConversationView<'a> {
@@ -27,6 +28,7 @@ impl<'a> ConversationView<'a> {
         theme: &'a Theme,
         show_thinking: bool,
         expand_tools: bool,
+        is_loading: bool,
     ) -> Self {
         Self {
             entries,
@@ -34,6 +36,7 @@ impl<'a> ConversationView<'a> {
             theme,
             show_thinking,
             expand_tools,
+            is_loading,
         }
     }
 
@@ -660,6 +663,17 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             width: inner.width.saturating_sub(2),
             height: inner.height,
         };
+
+        // Show loading indicator if parsing
+        if self.is_loading {
+            let loading_text = vec![Line::from(Span::styled(
+                "Loading conversation...",
+                self.theme.assistant_text,
+            ))];
+            let paragraph = Paragraph::new(Text::from(loading_text));
+            paragraph.render(padded, buf);
+            return;
+        }
 
         let lines = self.render_entries(padded.width as usize);
         let total_lines = lines.len();

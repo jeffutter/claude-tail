@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::io::{Read as _, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::types::{
     ContentBlock, ContentValue, DisplayEntry, LogEntry, ToolCallResult, ToolResultContent,
@@ -113,6 +113,20 @@ pub fn parse_jsonl_from_position(path: &Path, position: u64) -> Result<ParseResu
         errors,
         bytes_read: position + bytes_consumed as u64,
     })
+}
+
+/// Async version of parse_jsonl_file that runs parsing on a background thread
+pub async fn parse_jsonl_file_async(path: PathBuf) -> Result<ParseResult> {
+    tokio::task::spawn_blocking(move || parse_jsonl_file(&path))
+        .await
+        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
+}
+
+/// Async version of parse_jsonl_from_position that runs parsing on a background thread
+pub async fn parse_jsonl_from_position_async(path: PathBuf, position: u64) -> Result<ParseResult> {
+    tokio::task::spawn_blocking(move || parse_jsonl_from_position(&path, position))
+        .await
+        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
 }
 
 fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
