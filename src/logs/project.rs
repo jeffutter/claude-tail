@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::Result;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use serde::Deserialize;
 
 use super::types::Agent;
@@ -127,6 +127,39 @@ pub fn get_claude_projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("projects"))
 }
 
+/// Extracts the timestamp of the last entry in a JSONL file.
+/// Falls back to file mtime if parsing fails or no timestamp exists.
+fn get_last_jsonl_timestamp(path: &Path) -> SystemTime {
+    // Try to read the file and parse the last entry's timestamp
+    if let Ok(content) = std::fs::read_to_string(path) {
+        // Find the last non-empty line
+        if let Some(last_line) = content.lines().rfind(|l| !l.trim().is_empty()) {
+            // Try to parse as a minimal JSON object with just the timestamp field
+            #[derive(Deserialize)]
+            struct TimestampOnly {
+                timestamp: Option<DateTime<Utc>>,
+            }
+
+            if let Ok(entry) = serde_json::from_str::<TimestampOnly>(last_line) {
+                // Extract timestamp and convert to SystemTime
+                if let Some(timestamp) = entry.timestamp {
+                    // Convert DateTime<Utc> to SystemTime
+                    let duration_since_epoch =
+                        timestamp.signed_duration_since(DateTime::UNIX_EPOCH);
+                    if let Ok(std_duration) = duration_since_epoch.to_std() {
+                        return SystemTime::UNIX_EPOCH + std_duration;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to file mtime
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
 /// Computes the last modified time for a project by finding the most recent
 /// session JSONL file. Falls back to the project directory's mtime if no sessions exist.
 fn compute_project_last_modified(project_path: &Path) -> SystemTime {
@@ -136,12 +169,11 @@ fn compute_project_last_modified(project_path: &Path) -> SystemTime {
     if let Ok(entries) = std::fs::read_dir(project_path) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                && let Ok(metadata) = entry.metadata()
-                && let Ok(modified) = metadata.modified()
-                && modified > max_modified
-            {
-                max_modified = modified;
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                let modified = get_last_jsonl_timestamp(&path);
+                if modified > max_modified {
+                    max_modified = modified;
+                }
             }
         }
     }
@@ -253,10 +285,7 @@ pub fn discover_sessions(project: &Project) -> Result<Vec<Session>> {
                 .unwrap_or("")
                 .to_string();
 
-            let metadata = entry.metadata()?;
-            let last_modified = metadata
-                .modified()
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let last_modified = get_last_jsonl_timestamp(&path);
 
             let summary = summaries.get(&session_id).cloned().flatten();
 
@@ -333,9 +362,7 @@ pub fn discover_agents(session: &Session) -> Result<Vec<Agent>> {
     let mut agents = Vec::new();
 
     // Always include the main agent from the session's log file
-    let main_modified = std::fs::metadata(&session.log_path)
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let main_modified = get_last_jsonl_timestamp(&session.log_path);
 
     agents.push(Agent {
         id: "main".to_string(),
@@ -358,10 +385,7 @@ pub fn discover_agents(session: &Session) -> Result<Vec<Agent>> {
                 && let Some(filename) = path.file_stem().and_then(|s| s.to_str())
                 && let Some(agent_info) = parse_agent_filename(filename)
             {
-                let modified = entry
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                let modified = get_last_jsonl_timestamp(&path);
 
                 agents.push(Agent {
                     id: agent_info.id,
