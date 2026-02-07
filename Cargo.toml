@@ -24,6 +24,11 @@ tracing-appender = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+divan = "0.1"
+
+[[bench]]
+name = "parser"
+harness = false
 
 [profile.release]
 lto = true

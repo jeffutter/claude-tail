@@ -1,41 +1,4 @@
----
-id: ct-ad3b
-status: closed
-deps: []
-links: []
-created: 2026-02-07T01:55:06Z
-type: task
-priority: 2
-assignee: Jeffery Utter
-tags: [planned, performance]
----
-# Add benchmarks for JSONL parsing performance
-
-Create Divan benchmarks for parsing operations to establish performance baseline. Should benchmark: full file parsing, incremental parsing from position, large files with many entries, files with various error rates. This provides baseline metrics before any refactoring.
-
-## Design
-
-### Setup
-
-Add to `Cargo.toml`:
-
-```toml
-[dev-dependencies]
-divan = "0.1"
-tempfile = "3"
-
-[[bench]]
-name = "parser"
-harness = false
-```
-
-### Benchmark File
-
-Create `benches/parser.rs` with the following structure:
-
-```rust
-use std::io::Write;
-use tempfile::NamedTempFile;
+use claude_tail::logs::parser::{merge_tool_results, parse_jsonl_file, parse_jsonl_from_position};
 
 fn main() {
     divan::main();
@@ -48,11 +11,17 @@ mod data_gen {
     use tempfile::NamedTempFile;
 
     pub fn user_entry(text: &str) -> String {
-        format!(r#"{{"type":"user","message":{{"role":"user","content":"{}"}}}}"#, text)
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":"{}"}}}}"#,
+            text
+        )
     }
 
     pub fn assistant_entry(text: &str) -> String {
-        format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":"{}"}}}}"#, text)
+        format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":"{}"}}}}"#,
+            text
+        )
     }
 
     pub fn tool_call_entry(name: &str, id: &str) -> String {
@@ -116,14 +85,11 @@ mod data_gen {
 // Full file parsing benchmarks
 mod full_parse {
     use super::*;
-    use claude_tail::logs::parser::parse_jsonl_file;
 
     #[divan::bench(args = [100, 1000, 10000])]
     fn parse_mixed_entries(bencher: divan::Bencher, count: usize) {
         let file = data_gen::generate_mixed_file(count);
-        bencher.bench_local(|| {
-            parse_jsonl_file(file.path()).unwrap()
-        });
+        bencher.bench_local(|| parse_jsonl_file(file.path()).unwrap());
     }
 
     #[divan::bench]
@@ -148,7 +114,6 @@ mod full_parse {
 // Incremental parsing benchmarks
 mod incremental {
     use super::*;
-    use claude_tail::logs::parser::{parse_jsonl_file, parse_jsonl_from_position};
 
     #[divan::bench(args = [1000, 5000, 10000])]
     fn resume_from_middle(bencher: divan::Bencher, total: usize) {
@@ -159,9 +124,7 @@ mod incremental {
             result.bytes_read / 2
         };
 
-        bencher.bench_local(|| {
-            parse_jsonl_from_position(file.path(), halfway).unwrap()
-        });
+        bencher.bench_local(|| parse_jsonl_from_position(file.path(), halfway).unwrap());
     }
 
     #[divan::bench]
@@ -181,69 +144,23 @@ mod incremental {
 // Error recovery benchmarks
 mod error_recovery {
     use super::*;
-    use claude_tail::logs::parser::parse_jsonl_file;
 
     #[divan::bench(args = [0.0, 0.01, 0.05, 0.10])]
     fn parse_with_error_rate(bencher: divan::Bencher, error_rate: f32) {
         let file = data_gen::generate_file_with_errors(1000, error_rate);
-        bencher.bench_local(|| {
-            parse_jsonl_file(file.path()).unwrap()
-        });
+        bencher.bench_local(|| parse_jsonl_file(file.path()).unwrap());
     }
 }
 
 // Tool result merging benchmarks
 mod merge {
     use super::*;
-    use claude_tail::logs::parser::{parse_jsonl_file, merge_tool_results};
 
     #[divan::bench(args = [100, 500, 1000])]
     fn merge_tool_results_bench(bencher: divan::Bencher, count: usize) {
         let file = data_gen::generate_mixed_file(count);
         let result = parse_jsonl_file(file.path()).unwrap();
 
-        bencher.bench_local(|| {
-            merge_tool_results(result.entries.clone())
-        });
+        bencher.bench_local(|| merge_tool_results(result.entries.clone()));
     }
 }
-```
-
-### Benchmark Categories
-
-| Category | Benchmarks | Purpose |
-|----------|------------|---------|
-| **Full Parse** | `parse_mixed_entries[100,1000,10000]`, `parse_small/medium/large_file` | Baseline parsing performance at different file sizes |
-| **Incremental** | `resume_from_middle[1000,5000,10000]`, `incremental_append_simulation` | Seek + parse performance for file watching |
-| **Error Recovery** | `parse_with_error_rate[0%,1%,5%,10%]` | Impact of malformed lines on performance |
-| **Merge** | `merge_tool_results_bench[100,500,1000]` | Post-processing overhead |
-
-### Running Benchmarks
-
-```bash
-cargo bench                     # Run all benchmarks
-cargo bench --bench parser      # Run parser benchmarks only
-cargo bench -- full_parse       # Run specific category
-cargo bench -- --help           # Divan options
-```
-
-### Acceptance Criteria
-
-- [ ] `divan` and `tempfile` added to dev-dependencies
-- [ ] `[[bench]]` section added to Cargo.toml
-- [ ] `benches/parser.rs` created with data generation module
-- [ ] Full file parsing benchmarks at 3 sizes (100, 1000, 10000 entries)
-- [ ] Incremental parsing benchmarks from various positions
-- [ ] Error recovery benchmarks at various error rates (0%, 1%, 5%, 10%)
-- [ ] Tool result merging benchmarks
-- [ ] All benchmarks run successfully with `cargo bench`
-- [ ] Baseline results documented (can be in commit message or separate note)
-
-### Notes
-
-- Use `tempfile` to avoid cluttering the repo with test fixtures
-- Data generation functions can be reused by future tests
-- The `divan::black_box()` prevents compiler from optimizing away results
-- Consider running benchmarks multiple times for stable results
-- Results will inform ct-6qk4's StreamDeserializer comparison
-
