@@ -1,6 +1,6 @@
 ---
 id: ct-7hj2
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-07T01:55:03Z
@@ -182,3 +182,9 @@ mod tests {
 - Integration with `SessionWatcher` is not tested here—that's higher-level integration testing.
 - Follow ct-jsem's pattern: inline tests in the module file, use `serde_json::json!` macro where helpful.
 
+
+## Notes
+
+**2026-02-07T04:13:19Z**
+
+Tests complete with 29 tests across all 5 categories. Code review identified that parser treats EOF as complete line (consumes lines without trailing newlines), which differs from the original plan specification. This is documented in test comments. CRLF handling also has known limitation (off-by-one position tracking).
