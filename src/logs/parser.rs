@@ -129,7 +129,7 @@ pub async fn parse_jsonl_from_position_async(path: PathBuf, position: u64) -> Re
         .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
 }
 
-fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
+pub(super) fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
     match entry {
         LogEntry::User {
             message, timestamp, ..

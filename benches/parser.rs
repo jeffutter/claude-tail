@@ -1,4 +1,5 @@
 use claude_tail::logs::parser::{merge_tool_results, parse_jsonl_file, parse_jsonl_from_position};
+use claude_tail::logs::parser_stream::{parse_jsonl_stream, parse_jsonl_stream_from_position};
 
 fn main() {
     divan::main();
@@ -162,5 +163,73 @@ mod merge {
         let result = parse_jsonl_file(file.path()).unwrap();
 
         bencher.bench_local(|| merge_tool_results(result.entries.clone()));
+    }
+}
+
+// StreamDeserializer comparison benchmarks
+mod stream_parse {
+    use super::*;
+
+    #[divan::bench(args = [100, 1000, 10000])]
+    fn parse_mixed_entries(bencher: divan::Bencher, count: usize) {
+        let file = data_gen::generate_mixed_file(count);
+        bencher.bench_local(|| parse_jsonl_stream(file.path()).unwrap());
+    }
+
+    #[divan::bench]
+    fn parse_small_file() {
+        let file = data_gen::generate_mixed_file(100);
+        divan::black_box(parse_jsonl_stream(file.path()).unwrap());
+    }
+
+    #[divan::bench]
+    fn parse_medium_file() {
+        let file = data_gen::generate_mixed_file(1000);
+        divan::black_box(parse_jsonl_stream(file.path()).unwrap());
+    }
+
+    #[divan::bench]
+    fn parse_large_file() {
+        let file = data_gen::generate_mixed_file(10000);
+        divan::black_box(parse_jsonl_stream(file.path()).unwrap());
+    }
+}
+
+mod stream_incremental {
+    use super::*;
+
+    #[divan::bench(args = [1000, 5000, 10000])]
+    fn resume_from_middle(bencher: divan::Bencher, total: usize) {
+        let file = data_gen::generate_mixed_file(total);
+        // Parse first half to get position
+        let halfway = {
+            let result = parse_jsonl_stream(file.path()).unwrap();
+            result.bytes_read / 2
+        };
+
+        bencher.bench_local(|| parse_jsonl_stream_from_position(file.path(), halfway).unwrap());
+    }
+
+    #[divan::bench]
+    fn incremental_append_simulation() {
+        // Simulate reading an appended file multiple times
+        let file = data_gen::generate_mixed_file(1000);
+        let mut position = 0u64;
+
+        for _ in 0..10 {
+            let result = parse_jsonl_stream_from_position(file.path(), position).unwrap();
+            position = result.bytes_read;
+            divan::black_box(result);
+        }
+    }
+}
+
+mod stream_error_recovery {
+    use super::*;
+
+    #[divan::bench(args = [0.0, 0.01, 0.05, 0.10])]
+    fn parse_with_error_rate(bencher: divan::Bencher, error_rate: f32) {
+        let file = data_gen::generate_file_with_errors(1000, error_rate);
+        bencher.bench_local(|| parse_jsonl_stream(file.path()).unwrap());
     }
 }
