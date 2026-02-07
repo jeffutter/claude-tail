@@ -2,17 +2,34 @@ use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogEntry {
-    #[serde(rename = "type")]
-    pub entry_type: String,
-    #[serde(default)]
-    pub message: Option<MessageContent>,
-    #[serde(default)]
-    pub data: Option<serde_json::Value>,
-    #[serde(default)]
-    pub timestamp: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub session_id: Option<String>,
+#[serde(tag = "type")]
+pub enum LogEntry {
+    #[serde(rename = "user")]
+    User {
+        message: MessageContent,
+        #[serde(default)]
+        timestamp: Option<DateTime<Utc>>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    #[serde(rename = "assistant")]
+    Assistant {
+        message: MessageContent,
+        #[serde(default)]
+        timestamp: Option<DateTime<Utc>>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    #[serde(rename = "progress")]
+    Progress {
+        data: serde_json::Value,
+        #[serde(default)]
+        timestamp: Option<DateTime<Utc>>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
