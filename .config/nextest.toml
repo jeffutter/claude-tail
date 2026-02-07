@@ -1,0 +1,11 @@
+[profile.default]
+# Stop on first failure for faster local feedback
+fail-fast = true
+# Default timeout per test (60 seconds)
+slow-timeout = { period = "60s" }
+
+[profile.ci]
+# CI profile - run all tests even if some fail
+fail-fast = false
+# Stricter timeout in CI
+slow-timeout = { period = "30s" }

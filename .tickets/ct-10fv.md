@@ -1,6 +1,6 @@
 ---
 id: ct-10fv
-status: open
+status: closed
 deps: [ct-7hj2, ct-jsem]
 links: []
 created: 2026-02-07T02:09:17Z

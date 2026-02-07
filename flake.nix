@@ -37,6 +37,7 @@
             rustToolchain
             pkg-config
             lefthook
+            cargo-nextest
           ];
         };
 
