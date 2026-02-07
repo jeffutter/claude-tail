@@ -11,5 +11,16 @@ tags: [needs-plan, research]
 ---
 # Investigate StreamDeserializer for JSONL parsing
 
-Research whether serde_json::StreamDeserializer can replace the current line-based parsing while maintaining support for incremental parsing and incomplete line handling. Must verify: byte position tracking via byte_offset(), error recovery, incomplete JSON at EOF handling. Should produce a detailed analysis of trade-offs and recommendation.
+Research whether serde_json::StreamDeserializer can replace the current line-based parsing while maintaining support for incremental parsing and incomplete line handling.
+
+**Scope**: Research and analysis only - DO NOT modify the main codebase. You may create an alternative proof-of-concept implementation in a separate module or branch if helpful for comparison.
+
+**Must verify**:
+- Byte position tracking via byte_offset()
+- Error recovery behavior
+- Incomplete JSON at EOF handling (critical for streaming logs)
+- Memory efficiency compared to current approach
+- Performance characteristics
+
+**Deliverable**: Detailed written analysis documenting trade-offs, test results from POC (if created), and clear recommendation on whether to proceed with refactoring.
 
