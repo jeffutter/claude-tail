@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde_json::error::Category;
 use std::io::{Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -15,45 +16,78 @@ pub struct ParseResult {
     pub bytes_read: u64,
 }
 
-pub fn parse_jsonl_file(path: &Path) -> Result<ParseResult> {
-    let mut file = std::fs::File::open(path)?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
-
+/// Parse JSONL content using StreamDeserializer
+fn parse_stream_content(content: &str, base_position: u64) -> Result<ParseResult> {
     let mut entries = Vec::new();
     let mut errors = Vec::new();
+    let mut last_valid_position = 0;
+    let mut current_pos = 0;
 
-    // Track position of last successfully parsed line ending
-    let mut bytes_consumed = 0usize;
+    while current_pos < content.len() {
+        let slice = &content[current_pos..];
+        let deserializer = serde_json::Deserializer::from_str(slice);
+        let mut stream = deserializer.into_iter::<LogEntry>();
 
-    for (line_num, line) in content.lines().enumerate() {
-        // Calculate where this line ends (including the newline if present)
-        let line_end = bytes_consumed + line.len();
-        let with_newline = if content.as_bytes().get(line_end) == Some(&b'\n') {
-            line_end + 1
-        } else {
-            line_end
-        };
-
-        if line.trim().is_empty() {
-            bytes_consumed = with_newline;
-            continue;
-        }
-
-        match serde_json::from_str::<LogEntry>(line) {
-            Ok(entry) => {
+        match stream.next() {
+            Some(Ok(entry)) => {
+                // Successfully parsed an entry
                 entries.extend(convert_log_entry(&entry));
-                bytes_consumed = with_newline;
+                let offset = stream.byte_offset();
+                current_pos += offset;
+
+                // Skip trailing whitespace (including newlines) to match line-based behavior
+                let remaining = &content[current_pos..];
+                let whitespace_len = remaining
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>();
+
+                current_pos += whitespace_len;
+                last_valid_position = current_pos;
             }
-            Err(e) => {
-                // Only count as consumed if the line is complete (has newline or is at EOF)
-                // An incomplete line at EOF might just be partially written
-                if with_newline <= content.len() {
-                    errors.push(format!("Line {}: {}", line_num + 1, e));
-                    bytes_consumed = with_newline;
+            Some(Err(e)) => {
+                // Error occurred during parsing
+                let error_offset = current_pos + stream.byte_offset();
+
+                match e.classify() {
+                    Category::Eof => {
+                        // Incomplete JSON at EOF - don't advance position
+                        // This allows re-reading when more data is written
+                        break;
+                    }
+                    Category::Syntax | Category::Data => {
+                        // Malformed JSON - record error and try to skip to next line
+                        errors.push(format!(
+                            "Parse error at byte {}: {}",
+                            base_position + error_offset as u64,
+                            e
+                        ));
+
+                        // Try to recover by skipping to the next newline
+                        if let Some(remaining) = slice.get(stream.byte_offset()..) {
+                            if let Some(newline_pos) = remaining.find('\n') {
+                                // Found newline - advance past it
+                                current_pos = current_pos + stream.byte_offset() + newline_pos + 1;
+                                last_valid_position = current_pos;
+                            } else {
+                                // No newline found - we're at EOF with malformed data
+                                last_valid_position = content.len();
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Category::Io => {
+                        // I/O error (shouldn't happen with string deserialization)
+                        return Err(anyhow::anyhow!("I/O error during deserialization: {}", e));
+                    }
                 }
-                // If it's an incomplete line at EOF, don't advance bytes_consumed
-                // so we'll re-read it next time when it's complete
+            }
+            None => {
+                // End of stream
+                break;
             }
         }
     }
@@ -61,8 +95,16 @@ pub fn parse_jsonl_file(path: &Path) -> Result<ParseResult> {
     Ok(ParseResult {
         entries,
         errors,
-        bytes_read: bytes_consumed as u64,
+        bytes_read: base_position + last_valid_position as u64,
     })
+}
+
+pub fn parse_jsonl_file(path: &Path) -> Result<ParseResult> {
+    let mut file = std::fs::File::open(path)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+
+    parse_stream_content(&content, 0)
 }
 
 pub fn parse_jsonl_from_position(path: &Path, position: u64) -> Result<ParseResult> {
@@ -72,47 +114,7 @@ pub fn parse_jsonl_from_position(path: &Path, position: u64) -> Result<ParseResu
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
-    let mut entries = Vec::new();
-    let mut errors = Vec::new();
-
-    // Track position of last successfully parsed line ending
-    let mut bytes_consumed = 0usize;
-
-    for (line_num, line) in content.lines().enumerate() {
-        // Calculate where this line ends (including the newline if present)
-        let line_end = bytes_consumed + line.len();
-        let with_newline = if content.as_bytes().get(line_end) == Some(&b'\n') {
-            line_end + 1
-        } else {
-            line_end
-        };
-
-        if line.trim().is_empty() {
-            bytes_consumed = with_newline;
-            continue;
-        }
-
-        match serde_json::from_str::<LogEntry>(line) {
-            Ok(entry) => {
-                entries.extend(convert_log_entry(&entry));
-                bytes_consumed = with_newline;
-            }
-            Err(e) => {
-                // Only count as consumed if the line is complete (has newline or is at EOF)
-                if with_newline <= content.len() {
-                    errors.push(format!("Incremental line {}: {}", line_num + 1, e));
-                    bytes_consumed = with_newline;
-                }
-                // Incomplete line at EOF - don't advance, we'll re-read when complete
-            }
-        }
-    }
-
-    Ok(ParseResult {
-        entries,
-        errors,
-        bytes_read: position + bytes_consumed as u64,
-    })
+    parse_stream_content(&content, position)
 }
 
 /// Async version of parse_jsonl_file that runs parsing on a background thread
@@ -748,10 +750,10 @@ mod tests {
         let result = parse_jsonl_file(file.path()).unwrap();
 
         assert!(result.entries.is_empty());
-        // Parser treats EOF as complete line, so errors ARE recorded for invalid JSON
-        assert_eq!(result.errors.len(), 1);
-        // Position advances even on error at EOF
-        assert_eq!(result.bytes_read, incomplete.len() as u64);
+        // StreamDeserializer correctly detects EOF (incomplete JSON) - no errors recorded
+        assert!(result.errors.is_empty());
+        // Position does NOT advance - we'll retry when more data is written
+        assert_eq!(result.bytes_read, 0);
     }
 
     #[test]
@@ -770,9 +772,9 @@ mod tests {
         file.flush().unwrap();
 
         let result2 = parse_jsonl_file(file.path()).unwrap();
-        // Still only 1 entry (the first one) and 1 error (the incomplete line at EOF)
+        // Still only 1 entry (the first one), incomplete JSON at EOF has no error
         assert_eq!(result2.entries.len(), 1);
-        assert_eq!(result2.errors.len(), 1);
+        assert_eq!(result2.errors.len(), 0);
 
         // Complete the incomplete line
         file.write_all(b"\"role\":\"user\",\"content\":\"hello\"}}\n")
@@ -813,9 +815,9 @@ mod tests {
         let result = parse_jsonl_file(file.path()).unwrap();
 
         assert_eq!(result.entries.len(), 2); // First 2 parsed
-        assert_eq!(result.errors.len(), 1); // Incomplete JSON causes error at EOF
-        // Position includes all bytes (including the incomplete line)
-        let expected_pos = (line1.len() + 1 + line2.len() + 1 + 11) as u64; // +11 for {"partial":
+        assert_eq!(result.errors.len(), 0); // Incomplete JSON at EOF - no error (EOF condition)
+        // Position does NOT include incomplete line - will retry when complete
+        let expected_pos = (line1.len() + 1 + line2.len() + 1) as u64;
         assert_eq!(result.bytes_read, expected_pos);
     }
 
@@ -830,9 +832,9 @@ mod tests {
         let result = parse_jsonl_file(file.path()).unwrap();
 
         assert_eq!(result.entries.len(), 1);
-        assert_eq!(result.errors.len(), 1); // Incomplete JSON at EOF causes error
-        // Position includes the incomplete line
-        assert_eq!(result.bytes_read, (line1.len() + 1 + 9) as u64); // +9 for {"partial
+        assert_eq!(result.errors.len(), 0); // Incomplete JSON at EOF - no error (EOF condition)
+        // Position does NOT include incomplete line - will retry when complete
+        assert_eq!(result.bytes_read, (line1.len() + 1) as u64);
     }
 
     // ============================================================================
@@ -849,7 +851,7 @@ mod tests {
 
         assert!(result.entries.is_empty());
         assert_eq!(result.errors.len(), 1); // Error recorded
-        assert!(result.errors[0].contains("Line 1"));
+        assert!(result.errors[0].contains("Parse error at byte"));
         assert!(result.bytes_read > 0); // Position advanced past line
     }
 
@@ -920,23 +922,27 @@ mod tests {
     }
 
     #[test]
-    fn test_errors_contain_line_numbers() {
+    fn test_errors_contain_byte_positions() {
         let mut file = NamedTempFile::new().unwrap();
         let line1 = user_entry("valid");
         writeln!(file, "{}", line1).unwrap();
         writeln!(file, "valid line 2").unwrap();
-        file.write_all(b"{\"invalid\": json}\n").unwrap(); // Line 3
+        file.write_all(b"{\"invalid\": json}\n").unwrap();
         file.flush().unwrap();
 
         let result = parse_jsonl_file(file.path()).unwrap();
 
         assert!(!result.errors.is_empty());
-        // The error should mention line 3 (first error is the whitespace line, second is the invalid JSON)
-        // Actually, whitespace lines are skipped, so the invalid JSON should be at line 3
-        let has_line_3 = result.errors.iter().any(|e| e.contains("Line 3"));
+        // Errors now include byte offsets instead of line numbers
+        assert_eq!(result.errors.len(), 2); // Two invalid lines
+        // Check that errors contain "Parse error at byte"
+        let has_byte_offset = result
+            .errors
+            .iter()
+            .all(|e| e.contains("Parse error at byte"));
         assert!(
-            has_line_3,
-            "Expected error for Line 3, got: {:?}",
+            has_byte_offset,
+            "Expected errors with byte offsets, got: {:?}",
             result.errors
         );
     }
@@ -1004,15 +1010,63 @@ mod tests {
 
         let result = parse_jsonl_file(file.path()).unwrap();
 
-        // Document current behavior: String::lines() strips \r from the line content,
-        // so the line appears clean. But when calculating position, we check for \n
-        // after line.len(), which doesn't account for the stripped \r.
-        // The file has \r\n (2 bytes), but we only count \n (1 byte).
+        // StreamDeserializer correctly accounts for all bytes including \r
+        // The file has line + \r\n (line.len() + 2 bytes)
         assert_eq!(result.entries.len(), 1);
-        // Actual behavior: position is off by number of \r characters (CRLF limitation)
-        // We get line.len() + 1, not line.len() + 2
-        // Use actual result.bytes_read value
-        assert_eq!(result.bytes_read, 58);
+        assert!(result.errors.is_empty());
+        // Correct behavior: position includes all bytes including \r
+        assert_eq!(result.bytes_read, (line.len() + 2) as u64);
+    }
+
+    #[test]
+    fn test_crlf_multi_line_incremental_parsing() {
+        let mut file = NamedTempFile::new().unwrap();
+        let line1 = user_entry("first");
+        let line2 = user_entry("second");
+        let line3 = user_entry("third");
+
+        // Write first line with CRLF
+        write!(file, "{}\r\n", line1).unwrap();
+        file.flush().unwrap();
+
+        let result1 = parse_jsonl_file(file.path()).unwrap();
+        assert_eq!(result1.entries.len(), 1);
+        assert_eq!(result1.bytes_read, (line1.len() + 2) as u64);
+        let pos1 = result1.bytes_read;
+
+        // Append second line with CRLF
+        write!(file, "{}\r\n", line2).unwrap();
+        file.flush().unwrap();
+
+        let result2 = parse_jsonl_from_position(file.path(), pos1).unwrap();
+        assert_eq!(result2.entries.len(), 1);
+        assert_eq!(
+            result2.bytes_read,
+            pos1 + (line2.len() + 2) as u64,
+            "Position should correctly account for \\r in second line"
+        );
+        let pos2 = result2.bytes_read;
+
+        // Append third line with CRLF
+        write!(file, "{}\r\n", line3).unwrap();
+        file.flush().unwrap();
+
+        let result3 = parse_jsonl_from_position(file.path(), pos2).unwrap();
+        assert_eq!(result3.entries.len(), 1);
+        assert_eq!(
+            result3.bytes_read,
+            pos2 + (line3.len() + 2) as u64,
+            "Position should correctly account for \\r in third line"
+        );
+
+        // Verify complete file parse produces correct total
+        let result_full = parse_jsonl_file(file.path()).unwrap();
+        assert_eq!(result_full.entries.len(), 3);
+        assert_eq!(
+            result_full.bytes_read,
+            (line1.len() + 2 + line2.len() + 2 + line3.len() + 2) as u64,
+            "Full parse should correctly count all CRLF bytes"
+        );
     }
 
     #[test]

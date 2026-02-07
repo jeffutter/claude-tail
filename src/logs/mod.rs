@@ -1,5 +1,4 @@
 pub mod parser;
-pub mod parser_stream;
 pub mod project;
 pub mod types;
 pub mod watcher;
