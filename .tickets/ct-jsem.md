@@ -1,6 +1,6 @@
 ---
 id: ct-jsem
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-07T01:55:00Z
