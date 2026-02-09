@@ -385,24 +385,19 @@ impl App {
         // Get content width for line calculations
         let content_width = self.viewport_height.unwrap_or(80);
 
-        let (added, evicted) = self.buffer.receive_loaded(
+        let scroll_delta = self.buffer.receive_loaded(
             result,
             content_width,
             self.show_thinking,
             self.expand_tools,
         );
 
-        // Adjust scroll_offset based on what was added/evicted
-        if added > 0 {
-            // Content was prepended (Older) - shift scroll down
-            self.conversation_state.scroll_offset += added;
-        }
-        if evicted > 0 {
-            // Content was evicted from front - shift scroll up
-            self.conversation_state.scroll_offset = self
-                .conversation_state
-                .scroll_offset
-                .saturating_sub(evicted);
+        // Adjust scroll_offset based on delta
+        // Positive = content prepended (shift scroll down)
+        // Negative = content evicted from front (shift scroll up)
+        if scroll_delta != 0 {
+            self.conversation_state.scroll_offset =
+                (self.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
         }
     }
 

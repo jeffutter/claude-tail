@@ -38,6 +38,8 @@ pub struct EntryBuffer {
     parse_errors: Vec<String>,
     /// In-flight async load request
     pending_load: Option<PendingLoad>,
+    /// Last time a load was requested (for rate limiting)
+    last_load_time: Option<std::time::Instant>,
 }
 
 impl EntryBuffer {
@@ -55,6 +57,7 @@ impl EntryBuffer {
             path: PathBuf::new(),
             parse_errors: Vec::new(),
             pending_load: None,
+            last_load_time: None,
         }
     }
 
@@ -210,6 +213,12 @@ impl EntryBuffer {
     /// Request loading older entries. Returns None if already loading or nothing to load.
     /// Returns Some((path, byte_start, byte_end)) for the caller to spawn a parse task.
     pub fn request_load_older(&mut self, count: usize) -> Option<(PathBuf, u64, u64)> {
+        // Rate limit: don't trigger loads more than once per 50ms
+        if let Some(last_time) = self.last_load_time
+            && last_time.elapsed() < std::time::Duration::from_millis(50) {
+                return None;
+            }
+
         if self.pending_load.is_some() || !self.has_older() {
             return None;
         }
@@ -224,12 +233,19 @@ impl EntryBuffer {
             target_end,
             direction: LoadDirection::Older,
         });
+        self.last_load_time = Some(std::time::Instant::now());
 
         Some((self.path.clone(), start_byte, end_byte))
     }
 
     /// Request loading newer entries
     pub fn request_load_newer(&mut self, count: usize) -> Option<(PathBuf, u64, u64)> {
+        // Rate limit: don't trigger loads more than once per 50ms
+        if let Some(last_time) = self.last_load_time
+            && last_time.elapsed() < std::time::Duration::from_millis(50) {
+                return None;
+            }
+
         if self.pending_load.is_some() || !self.has_newer() {
             return None;
         }
@@ -244,12 +260,14 @@ impl EntryBuffer {
             target_end,
             direction: LoadDirection::Newer,
         });
+        self.last_load_time = Some(std::time::Instant::now());
 
         Some((self.path.clone(), start_byte, end_byte))
     }
 
     /// Request jump to file start. Returns parse parameters.
     pub fn request_jump_to_start(&mut self) -> Option<(PathBuf, u64, u64)> {
+        // No rate limiting for explicit jumps
         if self.pending_load.is_some() {
             return None;
         }
@@ -268,12 +286,14 @@ impl EntryBuffer {
             target_end,
             direction: LoadDirection::Replace,
         });
+        self.last_load_time = Some(std::time::Instant::now());
 
         Some((self.path.clone(), start_byte, end_byte))
     }
 
     /// Request jump to file end. Returns parse parameters.
     pub fn request_jump_to_end(&mut self) -> Option<(PathBuf, u64, u64)> {
+        // No rate limiting for explicit jumps
         if self.pending_load.is_some() {
             return None;
         }
@@ -293,12 +313,13 @@ impl EntryBuffer {
             target_end,
             direction: LoadDirection::Replace,
         });
+        self.last_load_time = Some(std::time::Instant::now());
 
         Some((self.path.clone(), start_byte, end_byte))
     }
 
     /// Receive results from an async parse. Updates buffer, returns
-    /// (added_rendered_lines, evicted_rendered_lines) for scroll_offset adjustment.
+    /// scroll_offset adjustment (positive = shift down, negative = shift up).
     /// content_width needed to calculate rendered line counts.
     pub fn receive_loaded(
         &mut self,
@@ -306,13 +327,13 @@ impl EntryBuffer {
         content_width: usize,
         show_thinking: bool,
         expand_tools: bool,
-    ) -> (usize, usize) {
+    ) -> isize {
         let Some(pending) = self.pending_load.take() else {
-            return (0, 0);
+            return 0;
         };
 
         let Ok(parse_result) = result else {
-            return (0, 0);
+            return 0;
         };
 
         self.parse_errors.extend(parse_result.errors);
@@ -320,7 +341,7 @@ impl EntryBuffer {
 
         match pending.direction {
             LoadDirection::Older => {
-                // Prepending older entries
+                // Prepending older entries - only prepend count matters for scroll adjustment
                 let added_count =
                     calculate_entries_lines(&merged, content_width, show_thinking, expand_tools);
 
@@ -345,31 +366,21 @@ impl EntryBuffer {
                 }
                 self.window_start_line = pending.target_start;
 
-                // Evict from back if over capacity
+                // Evict from back if over capacity (doesn't affect scroll position)
                 let total_buffered =
                     (self.window_end_line + 1).saturating_sub(self.window_start_line);
-                let mut evicted_count = 0;
                 if total_buffered > self.capacity {
                     let to_evict = total_buffered - self.capacity;
                     for _ in 0..to_evict {
-                        if let Some(entry) = self.entries.pop_back() {
-                            evicted_count += calculate_entry_lines(
-                                &entry,
-                                content_width,
-                                show_thinking,
-                                expand_tools,
-                            );
-                            self.window_end_line = self.window_end_line.saturating_sub(1);
-                        }
+                        self.entries.pop_back();
+                        self.window_end_line = self.window_end_line.saturating_sub(1);
                     }
                 }
 
-                (added_count, evicted_count)
+                added_count as isize // Positive = shift scroll down
             }
             LoadDirection::Newer => {
-                // Appending newer entries
-                let added_count =
-                    calculate_entries_lines(&merged, content_width, show_thinking, expand_tools);
+                // Appending newer entries - only front eviction matters for scroll adjustment
 
                 // Check for tool result merging at boundary
                 if let Some(DisplayEntry::ToolCall { id, result, .. }) = self.entries.back_mut()
@@ -393,7 +404,7 @@ impl EntryBuffer {
 
                 self.window_end_line = pending.target_end.saturating_sub(1);
 
-                // Evict from front if over capacity
+                // Evict from front if over capacity - this shifts content up
                 let total_buffered =
                     (self.window_end_line + 1).saturating_sub(self.window_start_line);
                 let mut evicted_count = 0;
@@ -412,17 +423,16 @@ impl EntryBuffer {
                     }
                 }
 
-                (added_count, evicted_count)
+                -(evicted_count as isize) // Negative = shift scroll up
             }
             LoadDirection::Replace => {
-                // Replace entire buffer
+                // Replace entire buffer - caller should reset scroll_offset
                 self.entries.clear();
                 self.entries = VecDeque::from(merged);
                 self.window_start_line = pending.target_start;
                 self.window_end_line = pending.target_end.saturating_sub(1);
 
-                // Return 0 for both - caller should reset scroll_offset entirely
-                (0, 0)
+                0 // No adjustment - caller resets scroll
             }
         }
     }
