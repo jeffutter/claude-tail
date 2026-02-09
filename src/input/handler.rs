@@ -150,42 +150,89 @@ fn handle_agents_input(app: &mut App, key: KeyEvent) -> Action {
 
 fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
     let viewport_height = app.viewport_height.unwrap_or(20);
+    let threshold = viewport_height / 2; // Trigger load when within half viewport of edge
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             app.conversation_state.scroll_down(1, viewport_height);
+            check_and_trigger_load(app, threshold, 20);
             Action::Redraw
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.conversation_state.scroll_up(1);
+            check_and_trigger_load(app, threshold, 20);
             Action::Redraw
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.conversation_state
                 .scroll_down(viewport_height / 2, viewport_height);
+            check_and_trigger_load(app, threshold, 30);
             Action::Redraw
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.conversation_state.scroll_up(viewport_height / 2);
+            check_and_trigger_load(app, threshold, 30);
             Action::Redraw
         }
         KeyCode::PageDown => {
             app.conversation_state
                 .scroll_down(viewport_height, viewport_height);
+            check_and_trigger_load(app, threshold, 40);
             Action::Redraw
         }
         KeyCode::PageUp => {
             app.conversation_state.scroll_up(viewport_height);
+            check_and_trigger_load(app, threshold, 40);
             Action::Redraw
         }
         KeyCode::Char('g') => {
             app.conversation_state.scroll_to_top();
+            // Request jump to start
+            if let Some((path, start, end)) = app.buffer.request_jump_to_start() {
+                spawn_scroll_load(app, path, start, end);
+            }
+            app.conversation_state.follow_mode = false;
             Action::Redraw
         }
         KeyCode::Char('G') => {
             app.conversation_state.scroll_to_bottom(viewport_height);
+            // Request jump to end
+            if let Some((path, start, end)) = app.buffer.request_jump_to_end() {
+                spawn_scroll_load(app, path, start, end);
+            }
+            app.conversation_state.follow_mode = true;
             Action::Redraw
         }
         _ => Action::None,
     }
+}
+
+/// Check if we're near buffer edges and trigger async load if needed
+fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
+    let scroll_offset = app.conversation_state.scroll_offset;
+    let total_lines = app.conversation_state.total_lines;
+
+    // Near top - load older entries
+    if scroll_offset < threshold && app.buffer.has_older()
+        && let Some((path, start, end)) = app.buffer.request_load_older(load_count) {
+            spawn_scroll_load(app, path, start, end);
+        }
+
+    // Near bottom - load newer entries
+    if scroll_offset > total_lines.saturating_sub(threshold) && app.buffer.has_newer()
+        && let Some((path, start, end)) = app.buffer.request_load_newer(load_count) {
+            spawn_scroll_load(app, path, start, end);
+        }
+}
+
+/// Spawn an async task to parse a byte range
+fn spawn_scroll_load(app: &mut App, path: std::path::PathBuf, start: u64, end: u64) {
+    use crate::app::ParseMessage;
+    use crate::logs::parse_jsonl_range_async;
+
+    let tx = app.parse_tx.clone();
+    tokio::spawn(async move {
+        let result = parse_jsonl_range_async(path.clone(), start, end).await;
+        let _ = tx.send(ParseMessage::Complete { path, result });
+    });
 }

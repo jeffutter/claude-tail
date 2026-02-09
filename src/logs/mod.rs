@@ -1,10 +1,14 @@
+pub mod buffer;
+pub mod index;
 pub mod parser;
 pub mod project;
 pub mod types;
 pub mod watcher;
 
+pub use buffer::EntryBuffer;
 pub use parser::{
-    ParseResult, merge_tool_results, parse_jsonl_file_async, parse_jsonl_from_position_async,
+    ParseResult,
+    parse_jsonl_range_async,
 };
 pub use project::{Project, Session, discover_agents, discover_projects, discover_sessions};
 pub use types::{Agent, DisplayEntry, ToolCallResult};

@@ -267,12 +267,14 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // Draw conversation pane
     let conversation_focused = app.focus == app::FocusPane::Conversation;
     let conversation_view = ConversationView::new(
-        &app.conversation,
+        app.buffer.entries(),
         conversation_focused,
         &app.theme,
         app.show_thinking,
         app.expand_tools,
-        app.is_parsing,
+        app.buffer.is_loading(),
+        app.buffer.total_file_lines(),
+        app.buffer.window_position(),
     );
     StatefulWidget::render(
         conversation_view,
@@ -345,11 +347,8 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     // Build warning indicators
     let mut warnings = Vec::new();
-    if app.entries_truncated > 0 {
-        warnings.push(format!("{}+ entries truncated", app.entries_truncated));
-    }
-    if !app.parse_errors.is_empty() {
-        warnings.push(format!("{} parse errors", app.parse_errors.len()));
+    if !app.buffer.parse_errors().is_empty() {
+        warnings.push(format!("{} parse errors", app.buffer.parse_errors().len()));
     }
 
     let error_text = app

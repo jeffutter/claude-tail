@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -6,15 +5,14 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 use crate::logs::{
-    Agent, DisplayEntry, ParseResult, Project, Session, SessionWatcher, discover_agents,
-    discover_projects, discover_sessions, merge_tool_results, parse_jsonl_file_async,
-    parse_jsonl_from_position_async,
+    Agent, EntryBuffer, ParseResult, Project, Session, SessionWatcher, discover_agents,
+    discover_projects, discover_sessions,
 };
 use crate::ui::{AgentListState, ConversationState, ProjectListState, SessionListState, Theme};
 
-/// Maximum number of conversation entries to keep in memory.
-/// When exceeded, oldest entries are dropped.
-const MAX_CONVERSATION_ENTRIES: usize = 10_000;
+/// Maximum number of JSONL lines to keep in buffer.
+/// When exceeded during scrolling, oldest/newest entries are evicted.
+const BUFFER_CAPACITY: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPane {
@@ -46,7 +44,7 @@ pub struct App {
     pub projects: Vec<Project>,
     pub sessions: Vec<Session>,
     pub agents: Vec<Agent>,
-    pub conversation: VecDeque<DisplayEntry>,
+    pub buffer: EntryBuffer,
     pub project_state: ProjectListState,
     pub session_state: SessionListState,
     pub agent_state: AgentListState,
@@ -58,20 +56,10 @@ pub struct App {
     pub show_help: bool,
     pub viewport_height: Option<usize>,
     pub error_message: Option<String>,
-    /// Number of entries dropped from the front due to MAX_CONVERSATION_ENTRIES limit
-    pub entries_truncated: usize,
-    /// Parse errors encountered (line number and error message)
-    pub parse_errors: Vec<String>,
-    /// Channel receiver for async parse results
+    /// Channel receiver for async parse results (now used for scroll loads)
     pub parse_rx: mpsc::UnboundedReceiver<ParseMessage>,
     /// Channel sender for async parse results
-    parse_tx: mpsc::UnboundedSender<ParseMessage>,
-    /// Whether a parse operation is currently in progress
-    pub is_parsing: bool,
-    /// Path of the file currently being parsed
-    pub parsing_path: Option<PathBuf>,
-    /// Whether a refresh operation is currently in progress
-    pub is_refreshing: bool,
+    pub parse_tx: mpsc::UnboundedSender<ParseMessage>,
     /// Channel receiver for async discovery results
     pub discovery_rx: mpsc::UnboundedReceiver<DiscoveryMessage>,
     /// Channel sender for async discovery results
@@ -105,7 +93,7 @@ impl App {
             projects,
             sessions,
             agents: Vec::new(),
-            conversation: VecDeque::new(),
+            buffer: EntryBuffer::new(BUFFER_CAPACITY),
             project_state: ProjectListState::new(),
             session_state: SessionListState::new(),
             agent_state: AgentListState::new(),
@@ -117,13 +105,8 @@ impl App {
             show_help: false,
             viewport_height: None,
             error_message: None,
-            entries_truncated: 0,
-            parse_errors: Vec::new(),
             parse_rx,
             parse_tx,
-            is_parsing: false,
-            parsing_path: None,
-            is_refreshing: false,
             discovery_rx,
             discovery_tx,
             super_follow_enabled,
@@ -184,7 +167,7 @@ impl App {
                     self.cached_session_width = None; // Invalidate cache
                     self.agents.clear();
                     self.cached_agent_width = None; // Invalidate cache
-                    self.conversation.clear();
+                    // Buffer will be cleared on next agent load
                 }
             }
         }
@@ -368,14 +351,7 @@ impl App {
     }
 
     pub fn load_conversation_for_selected_agent(&mut self) {
-        // Prevent duplicate parses
-        if self.is_parsing {
-            return;
-        }
-
         self.watcher.stop();
-        self.entries_truncated = 0;
-        self.parse_errors.clear();
 
         // Clone the path early to avoid borrow issues
         let log_path = self
@@ -385,122 +361,48 @@ impl App {
             .map(|agent| agent.log_path.clone());
 
         if let Some(path) = log_path {
-            // Mark as loading and clear previous conversation
-            self.is_parsing = true;
-            self.parsing_path = Some(path.clone());
-            self.conversation.clear();
             self.error_message = None;
 
-            // Spawn async parsing task
-            let tx = self.parse_tx.clone();
-            tokio::spawn(async move {
-                let result = parse_jsonl_file_async(path.clone()).await;
-                let _ = tx.send(ParseMessage::Complete { path, result });
-            });
-        } else {
-            self.conversation.clear();
-            self.is_parsing = false;
-            self.parsing_path = None;
-        }
-    }
-
-    /// Handle completed parse result from async task
-    pub fn handle_parse_complete(&mut self, path: PathBuf, result: Result<ParseResult>) {
-        // Determine if this is an initial parse or incremental refresh
-        // Invariant: Only one of these can be true at a time
-        //   - is_parsing: true during initial load (parsing_path == path)
-        //   - is_refreshing: true during incremental refresh (watcher path == path)
-        let is_initial = self.is_parsing && self.parsing_path.as_ref() == Some(&path);
-        let is_refresh = self.is_refreshing && self.watcher.current_path() == Some(&path);
-
-        // Only process if this is a valid parse request (either initial or refresh)
-        if !is_initial && !is_refresh {
-            return;
-        }
-
-        // Clear the appropriate state flag
-        if is_initial {
-            self.is_parsing = false;
-            self.parsing_path = None;
-        }
-        if is_refresh {
-            self.is_refreshing = false;
-        }
-
-        match result {
-            Ok(ParseResult {
-                entries,
-                errors,
-                bytes_read,
-            }) => {
-                if is_initial {
-                    // Initial load: replace conversation entirely
-                    let merged = merge_tool_results(entries);
-                    self.conversation = VecDeque::from(merged);
-                    self.parse_errors = errors;
-                    self.apply_conversation_limit();
-                    self.conversation_state = ConversationState::new();
-                    self.error_message = None;
-
-                    // Start watching from where we left off
+            // Synchronously load file with buffer
+            match self.buffer.load_file(&path) {
+                Ok(()) => {
+                    // Start watching from where buffer left off
                     if let Err(e) = self.watcher.watch(path) {
                         self.error_message = Some(format!("Failed to watch file: {}", e));
-                    } else {
-                        self.watcher.set_file_position(bytes_read);
                     }
-                } else if is_refresh {
-                    // Incremental refresh: append new entries
-                    self.watcher.set_file_position(bytes_read);
-                    self.parse_errors.extend(errors);
-
-                    if !entries.is_empty() {
-                        // Merge new entries (handles results within the new batch)
-                        let merged_new = merge_tool_results(entries);
-
-                        // Check if last existing entry is a ToolCall that needs its result
-                        // merged from the first new entry
-                        if let Some(DisplayEntry::ToolCall { id, result, .. }) =
-                            self.conversation.back_mut()
-                            && result.is_none()
-                            && let Some(DisplayEntry::ToolResult {
-                                tool_use_id,
-                                content,
-                                is_error,
-                                ..
-                            }) = merged_new.first()
-                            && tool_use_id == id
-                        {
-                            // Merge the result into the existing ToolCall
-                            *result = Some(crate::logs::ToolCallResult {
-                                content: content.clone(),
-                                is_error: *is_error,
-                            });
-                            // Skip the first entry since we merged it
-                            self.conversation.extend(merged_new.into_iter().skip(1));
-                        } else {
-                            self.conversation.extend(merged_new);
-                        }
-
-                        self.apply_conversation_limit();
-                    }
+                    // Reset conversation state for new file
+                    self.conversation_state = ConversationState::new();
                 }
-            }
-            Err(e) => {
-                if is_initial {
+                Err(e) => {
                     self.error_message = Some(format!("Failed to load conversation: {}", e));
-                    self.conversation.clear();
-                } else if is_refresh {
-                    self.error_message = Some(format!("Failed to refresh: {}", e));
                 }
             }
         }
     }
 
-    /// Enforce MAX_CONVERSATION_ENTRIES limit by dropping oldest entries
-    fn apply_conversation_limit(&mut self) {
-        while self.conversation.len() > MAX_CONVERSATION_ENTRIES {
-            self.conversation.pop_front();
-            self.entries_truncated += 1;
+    /// Handle completed parse result from async scroll load
+    pub fn handle_parse_complete(&mut self, _path: PathBuf, result: Result<ParseResult>) {
+        // Get content width for line calculations
+        let content_width = self.viewport_height.unwrap_or(80);
+
+        let (added, evicted) = self.buffer.receive_loaded(
+            result,
+            content_width,
+            self.show_thinking,
+            self.expand_tools,
+        );
+
+        // Adjust scroll_offset based on what was added/evicted
+        if added > 0 {
+            // Content was prepended (Older) - shift scroll down
+            self.conversation_state.scroll_offset += added;
+        }
+        if evicted > 0 {
+            // Content was evicted from front - shift scroll up
+            self.conversation_state.scroll_offset = self
+                .conversation_state
+                .scroll_offset
+                .saturating_sub(evicted);
         }
     }
 
@@ -513,22 +415,16 @@ impl App {
             return;
         }
 
-        // Prevent duplicate refreshes
-        if self.is_refreshing {
-            return;
-        }
-
-        if let Some(path) = self.watcher.current_path().cloned() {
-            let position = self.watcher.file_position();
-            self.is_refreshing = true;
+        if self.watcher.current_path().is_some() {
             self.last_conversation_refresh = Some(Instant::now());
 
-            // Spawn async parsing task
-            let tx = self.parse_tx.clone();
-            tokio::spawn(async move {
-                let result = parse_jsonl_from_position_async(path.clone(), position).await;
-                let _ = tx.send(ParseMessage::Complete { path, result });
-            });
+            // Synchronous tail update
+            if let Err(e) = self
+                .buffer
+                .file_changed(self.conversation_state.follow_mode)
+            {
+                self.error_message = Some(format!("Failed to refresh: {}", e));
+            }
         }
     }
 
@@ -639,7 +535,7 @@ impl Default for App {
                 projects: Vec::new(),
                 sessions: Vec::new(),
                 agents: Vec::new(),
-                conversation: VecDeque::new(),
+                buffer: EntryBuffer::new(BUFFER_CAPACITY),
                 project_state: ProjectListState::new(),
                 session_state: SessionListState::new(),
                 agent_state: AgentListState::new(),
@@ -651,13 +547,8 @@ impl Default for App {
                 show_help: false,
                 viewport_height: None,
                 error_message: Some("Failed to initialize application".to_string()),
-                entries_truncated: 0,
-                parse_errors: Vec::new(),
                 parse_rx,
                 parse_tx,
-                is_parsing: false,
-                parsing_path: None,
-                is_refreshing: false,
                 discovery_rx,
                 discovery_tx,
                 super_follow_enabled: false,

@@ -131,6 +131,26 @@ pub async fn parse_jsonl_from_position_async(path: PathBuf, position: u64) -> Re
         .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
 }
 
+/// Parse JSONL entries from a specific byte range [start..end) of a file
+pub fn parse_jsonl_range(path: &Path, start: u64, end: u64) -> Result<ParseResult> {
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(start))?;
+
+    let length = end.saturating_sub(start);
+    let mut buffer = vec![0u8; length as usize];
+    file.read_exact(&mut buffer)?;
+
+    let content = String::from_utf8(buffer)?;
+    parse_stream_content(&content, start)
+}
+
+/// Async version of parse_jsonl_range that runs parsing on a background thread
+pub async fn parse_jsonl_range_async(path: PathBuf, start: u64, end: u64) -> Result<ParseResult> {
+    tokio::task::spawn_blocking(move || parse_jsonl_range(&path, start, end))
+        .await
+        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
+}
+
 pub(super) fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
     match entry {
         LogEntry::User {
@@ -1085,5 +1105,102 @@ mod tests {
         // Unknown types are handled gracefully (no entries, no errors)
         assert_eq!(result.entries.len(), 2); // User and assistant only
         assert!(result.errors.is_empty());
+    }
+
+    // ============================================================================
+    // 6. Range Parsing Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parse_range_single_line() {
+        let mut file = NamedTempFile::new().unwrap();
+        let line1 = user_entry("first");
+        let line2 = user_entry("second");
+        let line3 = user_entry("third");
+        writeln!(file, "{}", line1).unwrap();
+        writeln!(file, "{}", line2).unwrap();
+        writeln!(file, "{}", line3).unwrap();
+        file.flush().unwrap();
+
+        // Parse just the second line
+        let start = (line1.len() + 1) as u64;
+        let end = start + line2.len() as u64;
+        let result = parse_jsonl_range(file.path(), start, end).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_range_multiple_lines() {
+        let mut file = NamedTempFile::new().unwrap();
+        let line1 = user_entry("first");
+        let line2 = user_entry("second");
+        let line3 = user_entry("third");
+        writeln!(file, "{}", line1).unwrap();
+        writeln!(file, "{}", line2).unwrap();
+        writeln!(file, "{}", line3).unwrap();
+        file.flush().unwrap();
+
+        // Parse lines 2 and 3
+        let start = (line1.len() + 1) as u64;
+        let end = start + (line2.len() + 1 + line3.len()) as u64;
+        let result = parse_jsonl_range(file.path(), start, end).unwrap();
+
+        assert_eq!(result.entries.len(), 2);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_range_from_middle() {
+        let mut file = NamedTempFile::new().unwrap();
+        let line1 = user_entry("first");
+        let line2 = user_entry("second");
+        let line3 = user_entry("third");
+        writeln!(file, "{}", line1).unwrap();
+        writeln!(file, "{}", line2).unwrap();
+        writeln!(file, "{}", line3).unwrap();
+        file.flush().unwrap();
+
+        // Parse from line 2 to end of file
+        let start = (line1.len() + 1) as u64;
+        let file_size = std::fs::metadata(file.path()).unwrap().len();
+        let result = parse_jsonl_range(file.path(), start, file_size).unwrap();
+
+        assert_eq!(result.entries.len(), 2);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_range_entire_file() {
+        let mut file = NamedTempFile::new().unwrap();
+        let line1 = user_entry("first");
+        let line2 = user_entry("second");
+        writeln!(file, "{}", line1).unwrap();
+        writeln!(file, "{}", line2).unwrap();
+        file.flush().unwrap();
+
+        let file_size = std::fs::metadata(file.path()).unwrap().len();
+        let result = parse_jsonl_range(file.path(), 0, file_size).unwrap();
+
+        assert_eq!(result.entries.len(), 2);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_range_with_errors() {
+        let mut file = NamedTempFile::new().unwrap();
+        let line1 = user_entry("valid");
+        writeln!(file, "{}", line1).unwrap();
+        writeln!(file, "{{\"invalid\": json}}").unwrap();
+        let line3 = user_entry("also valid");
+        writeln!(file, "{}", line3).unwrap();
+        file.flush().unwrap();
+
+        let file_size = std::fs::metadata(file.path()).unwrap().len();
+        let result = parse_jsonl_range(file.path(), 0, file_size).unwrap();
+
+        assert_eq!(result.entries.len(), 2); // Valid entries only
+        assert_eq!(result.errors.len(), 1); // One error recorded
     }
 }

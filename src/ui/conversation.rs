@@ -20,6 +20,10 @@ pub struct ConversationView<'a> {
     show_thinking: bool,
     expand_tools: bool,
     is_loading: bool,
+    /// Total JSONL lines in file (for approximate scrollbar)
+    total_file_lines: usize,
+    /// Buffer window position (start_line, end_line)
+    window_position: (usize, usize),
 }
 
 impl<'a> ConversationView<'a> {
@@ -30,6 +34,8 @@ impl<'a> ConversationView<'a> {
         show_thinking: bool,
         expand_tools: bool,
         is_loading: bool,
+        total_file_lines: usize,
+        window_position: (usize, usize),
     ) -> Self {
         Self {
             entries,
@@ -38,6 +44,8 @@ impl<'a> ConversationView<'a> {
             show_thinking,
             expand_tools,
             is_loading,
+            total_file_lines,
+            window_position,
         }
     }
 
@@ -1140,16 +1148,22 @@ impl<'a> StatefulWidget for ConversationView<'a> {
         let paragraph = Paragraph::new(Text::from(visible_lines));
         paragraph.render(padded, buf);
 
-        // Render scrollbar
-        if total_lines > inner.height as usize {
+        // Render scrollbar with approximate file position
+        if self.total_file_lines > 0 && total_lines > inner.height as usize {
             let scrollbar = Scrollbar::default()
                 .orientation(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓"));
 
+            // Calculate approximate position in file
+            let (win_start, win_end) = self.window_position;
+            let scroll_fraction = state.scroll_offset as f64 / total_lines.max(1) as f64;
+            let approx_position =
+                win_start as f64 + scroll_fraction * (win_end.saturating_sub(win_start)) as f64;
+
             let mut scrollbar_state = ScrollbarState::default()
-                .content_length(total_lines)
-                .position(state.scroll_offset)
+                .content_length(self.total_file_lines)
+                .position(approx_position as usize)
                 .viewport_content_length(inner.height as usize);
 
             scrollbar.render(
