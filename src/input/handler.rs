@@ -186,20 +186,38 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
         KeyCode::Char('g') => {
-            app.conversation_state.scroll_to_top();
-            // Request jump to start
+            use crate::logs::parse_jsonl_range;
+
+            // Jump to start - synchronous load
             if let Some((path, start, end)) = app.buffer.request_jump_to_start() {
-                spawn_scroll_load(app, path, start, end);
+                let content_width = app.viewport_height.unwrap_or(80);
+                let result = parse_jsonl_range(&path, start, end);
+                app.buffer.receive_loaded(
+                    result,
+                    content_width,
+                    app.show_thinking,
+                    app.expand_tools,
+                );
             }
+            app.conversation_state.scroll_to_top();
             app.conversation_state.follow_mode = false;
             Action::Redraw
         }
         KeyCode::Char('G') => {
-            app.conversation_state.scroll_to_bottom(viewport_height);
-            // Request jump to end
+            use crate::logs::parse_jsonl_range;
+
+            // Jump to end - synchronous load
             if let Some((path, start, end)) = app.buffer.request_jump_to_end() {
-                spawn_scroll_load(app, path, start, end);
+                let content_width = app.viewport_height.unwrap_or(80);
+                let result = parse_jsonl_range(&path, start, end);
+                app.buffer.receive_loaded(
+                    result,
+                    content_width,
+                    app.show_thinking,
+                    app.expand_tools,
+                );
             }
+            app.conversation_state.scroll_to_bottom(viewport_height);
             app.conversation_state.follow_mode = true;
             Action::Redraw
         }
@@ -207,32 +225,47 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
     }
 }
 
-/// Check if we're near buffer edges and trigger async load if needed
+/// Check if we're near buffer edges and trigger load if needed
 fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
+    use crate::logs::parse_jsonl_range;
+
     let scroll_offset = app.conversation_state.scroll_offset;
-    let total_lines = app.conversation_state.total_lines;
+    let _total_lines = app.conversation_state.total_lines;
+    let content_width = app.viewport_height.unwrap_or(80);
 
     // Near top - load older entries
     if scroll_offset < threshold && app.buffer.has_older()
         && let Some((path, start, end)) = app.buffer.request_load_older(load_count) {
-            spawn_scroll_load(app, path, start, end);
+            // Synchronous load - fast enough (<1ms for 20-40 lines)
+            let result = parse_jsonl_range(&path, start, end);
+            let scroll_delta = app.buffer.receive_loaded(
+                result,
+                content_width,
+                app.show_thinking,
+                app.expand_tools,
+            );
+            if scroll_delta != 0 {
+                app.conversation_state.scroll_offset =
+                    (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
+            }
         }
 
     // Near bottom - load newer entries
-    if scroll_offset > total_lines.saturating_sub(threshold) && app.buffer.has_newer()
+    let scroll_offset = app.conversation_state.scroll_offset; // Re-read after potential adjustment
+    if scroll_offset > app.conversation_state.total_lines.saturating_sub(threshold)
+        && app.buffer.has_newer()
         && let Some((path, start, end)) = app.buffer.request_load_newer(load_count) {
-            spawn_scroll_load(app, path, start, end);
+            // Synchronous load - fast enough (<1ms for 20-40 lines)
+            let result = parse_jsonl_range(&path, start, end);
+            let scroll_delta = app.buffer.receive_loaded(
+                result,
+                content_width,
+                app.show_thinking,
+                app.expand_tools,
+            );
+            if scroll_delta != 0 {
+                app.conversation_state.scroll_offset =
+                    (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
+            }
         }
-}
-
-/// Spawn an async task to parse a byte range
-fn spawn_scroll_load(app: &mut App, path: std::path::PathBuf, start: u64, end: u64) {
-    use crate::app::ParseMessage;
-    use crate::logs::parse_jsonl_range_async;
-
-    let tx = app.parse_tx.clone();
-    tokio::spawn(async move {
-        let result = parse_jsonl_range_async(path.clone(), start, end).await;
-        let _ = tx.send(ParseMessage::Complete { path, result });
-    });
 }
