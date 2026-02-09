@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use super::index::LineIndex;
 use super::parser::{ParseResult, merge_tool_results, parse_jsonl_range};
 use super::types::{DisplayEntry, ToolCallResult};
+use crate::text_utils::wrap_text_line_count;
 
 /// Direction of load operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,9 +216,10 @@ impl EntryBuffer {
     pub fn request_load_older(&mut self, count: usize) -> Option<(PathBuf, u64, u64)> {
         // Rate limit: don't trigger loads more than once per 50ms
         if let Some(last_time) = self.last_load_time
-            && last_time.elapsed() < std::time::Duration::from_millis(50) {
-                return None;
-            }
+            && last_time.elapsed() < std::time::Duration::from_millis(50)
+        {
+            return None;
+        }
 
         if self.pending_load.is_some() || !self.has_older() {
             return None;
@@ -242,9 +244,10 @@ impl EntryBuffer {
     pub fn request_load_newer(&mut self, count: usize) -> Option<(PathBuf, u64, u64)> {
         // Rate limit: don't trigger loads more than once per 50ms
         if let Some(last_time) = self.last_load_time
-            && last_time.elapsed() < std::time::Duration::from_millis(50) {
-                return None;
-            }
+            && last_time.elapsed() < std::time::Duration::from_millis(50)
+        {
+            return None;
+        }
 
         if self.pending_load.is_some() || !self.has_newer() {
             return None;
@@ -501,23 +504,6 @@ fn calculate_entries_lines(
         .iter()
         .map(|entry| calculate_entry_lines(entry, content_width, show_thinking, expand_tools))
         .sum()
-}
-
-/// Count lines needed to wrap text
-fn wrap_text_line_count(text: &str, width: usize) -> usize {
-    if text.is_empty() {
-        return 0;
-    }
-    let mut count = 0;
-    for line in text.lines() {
-        if line.is_empty() {
-            count += 1;
-        } else {
-            let line_len = unicode_width::UnicodeWidthStr::width(line);
-            count += (line_len + width - 1) / width.max(1);
-        }
-    }
-    count
 }
 
 /// Estimate lines for tool rendering

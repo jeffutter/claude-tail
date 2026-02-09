@@ -1,6 +1,6 @@
 ---
 id: ct-zkha
-status: closed
+status: in_progress
 deps: []
 links: []
 created: 2026-02-09T05:21:28Z
@@ -354,3 +354,44 @@ Branch 2 simplifies (no async, just call `file_changed`). Branch 3 changes from 
 - All existing tests pass
 - New tests for LineIndex, parse_jsonl_range, EntryBuffer
 
+## Bug Fix: Text Wrapping Mismatch
+
+### Problem
+
+After initial implementation, users reported critical scrolling bugs:
+1. Scroll momentum: holding arrow keys causes scrolling to continue after key release (queued events)
+2. Can't scroll back to bottom after PageUp to top
+3. Scrollbar disappearing
+4. Blank/truncated text display
+
+### Root Cause
+
+Line count calculations were inconsistent between two locations:
+
+- **buffer.rs** `wrap_text_line_count` (lines 509-523): Used simple character-width division without word wrapping
+  ```rust
+  count += (line_len + width - 1) / width.max(1);  // ceiling division
+  ```
+
+- **conversation.rs** `wrap_text` (lines 1228-1259): Used proper word-aware wrapping
+  ```rust
+  // Splits at word boundaries, different line count than character division
+  ```
+
+When `receive_loaded()` calculated `scroll_delta` using buffer.rs line counts, those counts differed from actual rendered lines in conversation.rs. This caused scroll_offset to point to wrong positions, leading to all reported symptoms.
+
+### Solution
+
+Created `src/text_utils.rs` as shared module with single source of truth for text wrapping:
+- `wrap_text()`: Word-aware wrapping function
+- `wrap_text_line_count()`: Calls `wrap_text().len()` for guaranteed consistency
+
+Both `buffer.rs` and `conversation.rs` now import and use these shared functions, ensuring line count calculations match actual rendering.
+
+### Files Changed
+
+- `src/text_utils.rs` (new): Shared text wrapping utilities
+- `src/lib.rs`: Added text_utils module
+- `src/main.rs`: Added text_utils module  
+- `src/logs/buffer.rs`: Import and use shared `wrap_text_line_count`, removed local version
+- `src/ui/conversation.rs`: Import and use shared `wrap_text`, removed local version

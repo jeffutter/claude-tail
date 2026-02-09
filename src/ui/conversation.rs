@@ -8,10 +8,10 @@ use ratatui::{
     },
 };
 use std::collections::VecDeque;
-use unicode_width::UnicodeWidthStr;
 
 use super::styles::Theme;
 use crate::logs::{DisplayEntry, ToolCallResult};
+use crate::text_utils::wrap_text;
 
 pub struct ConversationView<'a> {
     entries: &'a VecDeque<DisplayEntry>,
@@ -1223,39 +1223,6 @@ fn abbreviate_path(path: &str) -> String {
         .collect();
 
     abbreviated.join("/")
-}
-
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    for line in text.lines() {
-        if line.width() <= width {
-            lines.push(line.to_string());
-        } else {
-            // Simple word wrapping
-            let mut current_line = String::new();
-            for word in line.split_whitespace() {
-                if current_line.is_empty() {
-                    current_line = word.to_string();
-                } else if current_line.width() + 1 + word.width() <= width {
-                    current_line.push(' ');
-                    current_line.push_str(word);
-                } else {
-                    lines.push(current_line);
-                    current_line = word.to_string();
-                }
-            }
-            if !current_line.is_empty() {
-                lines.push(current_line);
-            }
-        }
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    lines
 }
 
 pub struct ConversationState {

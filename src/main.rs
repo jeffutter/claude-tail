@@ -3,6 +3,7 @@
 mod app;
 mod input;
 mod logs;
+mod text_utils;
 mod themes;
 mod ui;
 
