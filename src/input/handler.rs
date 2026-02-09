@@ -234,38 +234,35 @@ fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
     let content_width = app.viewport_height.unwrap_or(80);
 
     // Near top - load older entries
-    if scroll_offset < threshold && app.buffer.has_older()
-        && let Some((path, start, end)) = app.buffer.request_load_older(load_count) {
-            // Synchronous load - fast enough (<1ms for 20-40 lines)
-            let result = parse_jsonl_range(&path, start, end);
-            let scroll_delta = app.buffer.receive_loaded(
-                result,
-                content_width,
-                app.show_thinking,
-                app.expand_tools,
-            );
-            if scroll_delta != 0 {
-                app.conversation_state.scroll_offset =
-                    (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
-            }
+    if scroll_offset < threshold
+        && app.buffer.has_older()
+        && let Some((path, start, end)) = app.buffer.request_load_older(load_count)
+    {
+        // Synchronous load - fast enough (<1ms for 20-40 lines)
+        let result = parse_jsonl_range(&path, start, end);
+        let scroll_delta =
+            app.buffer
+                .receive_loaded(result, content_width, app.show_thinking, app.expand_tools);
+        if scroll_delta != 0 {
+            app.conversation_state.scroll_offset =
+                (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
         }
+    }
 
     // Near bottom - load newer entries
     let scroll_offset = app.conversation_state.scroll_offset; // Re-read after potential adjustment
     if scroll_offset > app.conversation_state.total_lines.saturating_sub(threshold)
         && app.buffer.has_newer()
-        && let Some((path, start, end)) = app.buffer.request_load_newer(load_count) {
-            // Synchronous load - fast enough (<1ms for 20-40 lines)
-            let result = parse_jsonl_range(&path, start, end);
-            let scroll_delta = app.buffer.receive_loaded(
-                result,
-                content_width,
-                app.show_thinking,
-                app.expand_tools,
-            );
-            if scroll_delta != 0 {
-                app.conversation_state.scroll_offset =
-                    (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
-            }
+        && let Some((path, start, end)) = app.buffer.request_load_newer(load_count)
+    {
+        // Synchronous load - fast enough (<1ms for 20-40 lines)
+        let result = parse_jsonl_range(&path, start, end);
+        let scroll_delta =
+            app.buffer
+                .receive_loaded(result, content_width, app.show_thinking, app.expand_tools);
+        if scroll_delta != 0 {
+            app.conversation_state.scroll_offset =
+                (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
         }
+    }
 }
