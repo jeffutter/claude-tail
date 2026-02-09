@@ -345,6 +345,12 @@ impl EntryBuffer {
         match pending.direction {
             LoadDirection::Older => {
                 // Prepending older entries - only prepend count matters for scroll adjustment
+
+                // If parse returned no entries, don't update window or evict
+                if merged.is_empty() {
+                    return 0;
+                }
+
                 let added_count =
                     calculate_entries_lines(&merged, content_width, show_thinking, expand_tools);
 
@@ -384,6 +390,11 @@ impl EntryBuffer {
             }
             LoadDirection::Newer => {
                 // Appending newer entries - only front eviction matters for scroll adjustment
+
+                // If parse returned no entries, don't update window or evict
+                if merged.is_empty() {
+                    return 0;
+                }
 
                 // Check for tool result merging at boundary
                 if let Some(DisplayEntry::ToolCall { id, result, .. }) = self.entries.back_mut()
