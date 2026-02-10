@@ -1259,18 +1259,24 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             let buffered_jsonl_lines = (win_end.saturating_sub(win_start)).max(1) as f64;
             let avg_rendered_per_jsonl = total_lines as f64 / buffered_jsonl_lines;
 
+            // Smooth the average ratio using exponential moving average (alpha=0.3)
+            // This reduces viewport size jitter from variable entry heights
+            let alpha = 0.3;
+            state.smoothed_avg_ratio =
+                alpha * avg_rendered_per_jsonl + (1.0 - alpha) * state.smoothed_avg_ratio;
+
             // Update tracked position based on scroll delta (only if window hasn't changed)
             state.update_jsonl_position(
                 (win_start, win_end),
-                avg_rendered_per_jsonl,
+                state.smoothed_avg_ratio,
                 self.total_file_lines,
                 total_lines,
                 inner.height as usize,
             );
 
-            // Estimate viewport size in JSONL lines
+            // Estimate viewport size in JSONL lines using smoothed average
             let viewport_jsonl_lines =
-                (inner.height as f64 / avg_rendered_per_jsonl).max(1.0) as usize;
+                (inner.height as f64 / state.smoothed_avg_ratio).max(1.0) as usize;
 
             eprintln!(
                 "[SCROLLBAR] win=[{}..{}], scroll={}/{}, avg={:.2}, pos={:.1}, total_file={}, viewport={}",
@@ -1355,6 +1361,7 @@ pub struct ConversationState {
     pub estimated_jsonl_position: f64, // File-wide JSONL line position (stable across buffer shifts)
     last_scroll_offset: usize,         // For calculating scroll deltas
     last_window: (usize, usize),       // Previous (win_start, win_end) to detect buffer shifts
+    smoothed_avg_ratio: f64, // Smoothed avg rendered lines per JSONL line (for stable viewport size)
 }
 
 impl ConversationState {
@@ -1366,6 +1373,7 @@ impl ConversationState {
             estimated_jsonl_position: 0.0,
             last_scroll_offset: 0,
             last_window: (0, 0),
+            smoothed_avg_ratio: 1.0,
         }
     }
 
@@ -1395,11 +1403,11 @@ impl ConversationState {
     }
 
     /// Update estimated JSONL position based on scroll delta
-    /// Only updates if the buffer window hasn't changed (to avoid treating buffer shifts as scrolls)
+    /// Uses incremental tracking for stability, boundaries for accuracy
     pub fn update_jsonl_position(
         &mut self,
         current_window: (usize, usize),
-        _avg_rendered_per_jsonl: f64,
+        avg_rendered_per_jsonl: f64,
         total_file_lines: usize,
         total_rendered_lines: usize,
         viewport_height: usize,
@@ -1407,37 +1415,40 @@ impl ConversationState {
         let (win_start, win_end) = current_window;
         let window_changed = current_window != self.last_window;
 
-        // Always recalculate at boundaries (most accurate)
+        // At exact boundaries, snap to accurate positions
         if self.scroll_offset == 0 {
-            // At top of buffer -> position is the start of the window
             self.estimated_jsonl_position = win_start as f64;
         } else {
             let max_scroll = total_rendered_lines.saturating_sub(viewport_height);
 
             if self.scroll_offset >= max_scroll && max_scroll > 0 {
-                // At bottom of buffer -> position is the end
                 self.estimated_jsonl_position = win_end as f64;
             } else if window_changed {
-                // Window changed (buffer shift) - maintain relative position within window
-                // Don't use scroll_offset since it was adjusted by the buffer
-                // Keep position stable - just clamp to new window bounds
+                // Window changed (buffer shift) - keep position stable, clamp to new bounds
                 self.estimated_jsonl_position = self
                     .estimated_jsonl_position
                     .max(win_start as f64)
                     .min(win_end as f64);
-            } else if total_rendered_lines > 1 {
-                // Pure user scroll (window unchanged) - interpolate based on scroll
-                let viewport_center = self.scroll_offset as f64 + (viewport_height as f64 / 2.0);
-                let scroll_fraction = (viewport_center / total_rendered_lines as f64).min(1.0);
-                let window_size = (win_end.saturating_sub(win_start)) as f64;
-                self.estimated_jsonl_position = win_start as f64 + (scroll_fraction * window_size);
             } else {
-                // Fallback
-                self.estimated_jsonl_position = win_start as f64;
+                // Pure user scroll - track incrementally for stability
+                let scroll_delta =
+                    (self.scroll_offset as isize) - (self.last_scroll_offset as isize);
+
+                if scroll_delta != 0 && avg_rendered_per_jsonl > 0.0 {
+                    // Estimate JSONL lines scrolled: rendered_lines / avg_rendered_per_jsonl
+                    let jsonl_delta = (scroll_delta as f64) / avg_rendered_per_jsonl;
+                    self.estimated_jsonl_position += jsonl_delta;
+
+                    // Clamp to current window bounds for safety
+                    self.estimated_jsonl_position = self
+                        .estimated_jsonl_position
+                        .max(win_start as f64)
+                        .min(win_end as f64);
+                }
             }
         }
 
-        // Clamp to valid range
+        // Final clamp to file bounds
         self.estimated_jsonl_position = self
             .estimated_jsonl_position
             .max(0.0)

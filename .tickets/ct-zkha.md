@@ -405,3 +405,7 @@ Fixed scrollbar jank caused by position jumps during buffer shifts. When buffer 
 **2026-02-10T02:07:13Z**
 
 Fixed buffer eviction bug in LoadDirection::Newer case. When loading newer entries and evicting from front, we now update window_start_line (similar to how LoadDirection::Older updates window_end_line when evicting from back). This ensures has_older() returns correct value after full traversal cycles, preventing scrolling from getting stuck.
+
+**2026-02-10T02:13:52Z**
+
+Improved scrollbar stability: (1) Changed position tracking from interpolation to incremental delta-based tracking - more stable, less jumpy. (2) Added exponential moving average (alpha=0.3) to smooth avg_rendered_per_jsonl ratio - reduces viewport size jitter from variable entry heights.
