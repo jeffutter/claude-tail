@@ -201,6 +201,7 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
             }
             app.conversation_state.scroll_to_top();
             app.conversation_state.follow_mode = false;
+            app.conversation_state.set_jsonl_position(0.0);
             Action::Redraw
         }
         KeyCode::Char('G') => {
@@ -219,6 +220,8 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
             }
             app.conversation_state.scroll_to_bottom(viewport_height);
             app.conversation_state.follow_mode = true;
+            let total_lines = app.buffer.total_file_lines() as f64;
+            app.conversation_state.set_jsonl_position(total_lines);
             Action::Redraw
         }
         _ => Action::None,
@@ -230,28 +233,53 @@ fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
     use crate::logs::parse_jsonl_range;
 
     let scroll_offset = app.conversation_state.scroll_offset;
-    let _total_lines = app.conversation_state.total_lines;
+    let total_lines = app.conversation_state.total_lines;
     let content_width = app.viewport_height.unwrap_or(80);
+
+    eprintln!(
+        "[SCROLL] offset={}, total={}, threshold={}, entries={}",
+        scroll_offset,
+        total_lines,
+        threshold,
+        app.buffer.entries().len()
+    );
 
     // Near top - load older entries
     if scroll_offset < threshold
         && app.buffer.has_older()
         && let Some((path, start, end)) = app.buffer.request_load_older(load_count)
     {
+        eprintln!("[LOAD] Loading older: bytes {}..{}", start, end);
         // Synchronous load - fast enough (<1ms for 20-40 lines)
         let result = parse_jsonl_range(&path, start, end);
+        let entries_before = app.buffer.entries().len();
         let scroll_delta =
             app.buffer
                 .receive_loaded(result, content_width, app.show_thinking, app.expand_tools);
+        let entries_after = app.buffer.entries().len();
+        eprintln!(
+            "[LOAD] Loaded older: entries {} -> {}, delta={}",
+            entries_before, entries_after, scroll_delta
+        );
         if scroll_delta != 0 {
+            let old_offset = app.conversation_state.scroll_offset;
             app.conversation_state.scroll_offset =
                 (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
+            eprintln!(
+                "[LOAD] Adjusted offset: {} -> {}",
+                old_offset, app.conversation_state.scroll_offset
+            );
         }
     }
 
     // Near bottom - load newer entries
     let scroll_offset = app.conversation_state.scroll_offset; // Re-read after potential adjustment
-    if scroll_offset > app.conversation_state.total_lines.saturating_sub(threshold)
+    let viewport_height = app.viewport_height.unwrap_or(20);
+    if scroll_offset
+        > app
+            .conversation_state
+            .total_lines
+            .saturating_sub(viewport_height + threshold)
         && app.buffer.has_newer()
         && let Some((path, start, end)) = app.buffer.request_load_newer(load_count)
     {

@@ -13,6 +13,90 @@ use super::styles::Theme;
 use crate::logs::{DisplayEntry, ToolCallResult};
 use crate::text_utils::wrap_text;
 
+/// Calculate how many lines an entry would generate when rendered
+/// This is a standalone version for testing and other uses outside of ConversationView
+pub fn calculate_entry_lines(
+    entry: &DisplayEntry,
+    content_width: usize,
+    show_thinking: bool,
+    expand_tools: bool,
+) -> usize {
+    match entry {
+        DisplayEntry::UserMessage { text, .. } => {
+            1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
+        }
+        DisplayEntry::AssistantText { text, .. } => {
+            1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
+        }
+        DisplayEntry::ToolCall {
+            name: _,
+            input,
+            result,
+            ..
+        } => {
+            let mut count = 2; // header + input label
+            if expand_tools {
+                let input_str = serde_json::to_string_pretty(input).unwrap_or_default();
+                count += wrap_text(&input_str, content_width).len();
+            }
+            if let Some(ToolCallResult {
+                content,
+                is_error: _,
+            }) = result
+            {
+                count += 1; // result label
+                if expand_tools && !content.is_empty() {
+                    let display_content = if content.len() > 500 {
+                        let truncate_at = content
+                            .char_indices()
+                            .take_while(|(i, _)| *i < 500)
+                            .last()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .unwrap_or(0);
+                        &content[..truncate_at]
+                    } else {
+                        content.as_str()
+                    };
+                    count += wrap_text(display_content, content_width).len();
+                }
+            }
+            count + 1 // blank line
+        }
+        DisplayEntry::ToolResult {
+            content,
+            is_error: _,
+            ..
+        } => {
+            let mut count = 1; // label line
+            if expand_tools && !content.is_empty() {
+                let display_content = if content.len() > 500 {
+                    let truncate_at = content
+                        .char_indices()
+                        .take_while(|(i, _)| *i < 500)
+                        .last()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .unwrap_or(0);
+                    &content[..truncate_at]
+                } else {
+                    content.as_str()
+                };
+                count += wrap_text(display_content, content_width).len();
+            }
+            count + 1 // blank line
+        }
+        DisplayEntry::Thinking { text, .. } => {
+            if show_thinking {
+                1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
+            } else {
+                1 // collapsed indicator
+            }
+        }
+        DisplayEntry::AgentSpawn { .. } | DisplayEntry::HookEvent { .. } => {
+            2 // single line + blank
+        }
+    }
+}
+
 pub struct ConversationView<'a> {
     entries: &'a VecDeque<DisplayEntry>,
     focused: bool,
@@ -1115,6 +1199,14 @@ impl<'a> StatefulWidget for ConversationView<'a> {
         // Calculate total lines first for follow mode and scrolling
         let total_lines = self.calculate_total_lines(padded.width as usize);
 
+        eprintln!(
+            "[RENDER] entries={}, total_lines={}, offset={}, viewport={}",
+            self.entries.len(),
+            total_lines,
+            state.scroll_offset,
+            inner.height
+        );
+
         // Update state with total lines for scrollbar
         state.total_lines = total_lines;
 
@@ -1125,7 +1217,14 @@ impl<'a> StatefulWidget for ConversationView<'a> {
 
         // Clamp scroll offset
         let max_scroll = total_lines.saturating_sub(inner.height as usize);
+        let old_offset = state.scroll_offset;
         state.scroll_offset = state.scroll_offset.min(max_scroll);
+        if old_offset != state.scroll_offset {
+            eprintln!(
+                "[RENDER] Clamped offset: {} -> {} (max={})",
+                old_offset, state.scroll_offset, max_scroll
+            );
+        }
 
         // Render entries in viewport range (with small buffer)
         let (lines, render_offset) = self.render_entries(
@@ -1155,16 +1254,40 @@ impl<'a> StatefulWidget for ConversationView<'a> {
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓"));
 
-            // Calculate approximate position in file
+            // Calculate avg for updating the tracked position
             let (win_start, win_end) = self.window_position;
-            let scroll_fraction = state.scroll_offset as f64 / total_lines.max(1) as f64;
-            let approx_position =
-                win_start as f64 + scroll_fraction * (win_end.saturating_sub(win_start)) as f64;
+            let buffered_jsonl_lines = (win_end.saturating_sub(win_start)).max(1) as f64;
+            let avg_rendered_per_jsonl = total_lines as f64 / buffered_jsonl_lines;
+
+            // Update tracked position based on scroll delta (only if window hasn't changed)
+            state.update_jsonl_position(
+                (win_start, win_end),
+                avg_rendered_per_jsonl,
+                self.total_file_lines,
+                total_lines,
+                inner.height as usize,
+            );
+
+            // Estimate viewport size in JSONL lines
+            let viewport_jsonl_lines =
+                (inner.height as f64 / avg_rendered_per_jsonl).max(1.0) as usize;
+
+            eprintln!(
+                "[SCROLLBAR] win=[{}..{}], scroll={}/{}, avg={:.2}, pos={:.1}, total_file={}, viewport={}",
+                win_start,
+                win_end,
+                state.scroll_offset,
+                total_lines,
+                avg_rendered_per_jsonl,
+                state.estimated_jsonl_position,
+                self.total_file_lines,
+                viewport_jsonl_lines
+            );
 
             let mut scrollbar_state = ScrollbarState::default()
                 .content_length(self.total_file_lines)
-                .position(approx_position as usize)
-                .viewport_content_length(inner.height as usize);
+                .position(state.estimated_jsonl_position as usize)
+                .viewport_content_length(viewport_jsonl_lines);
 
             scrollbar.render(
                 area.inner(ratatui::layout::Margin {
@@ -1229,6 +1352,9 @@ pub struct ConversationState {
     pub scroll_offset: usize,
     pub total_lines: usize,
     pub follow_mode: bool,
+    pub estimated_jsonl_position: f64, // File-wide JSONL line position (stable across buffer shifts)
+    last_scroll_offset: usize,         // For calculating scroll deltas
+    last_window: (usize, usize),       // Previous (win_start, win_end) to detect buffer shifts
 }
 
 impl ConversationState {
@@ -1237,6 +1363,9 @@ impl ConversationState {
             scroll_offset: 0,
             total_lines: 0,
             follow_mode: true, // Start with follow mode enabled
+            estimated_jsonl_position: 0.0,
+            last_scroll_offset: 0,
+            last_window: (0, 0),
         }
     }
 
@@ -1263,6 +1392,65 @@ impl ConversationState {
 
     pub fn toggle_follow(&mut self) {
         self.follow_mode = !self.follow_mode;
+    }
+
+    /// Update estimated JSONL position based on scroll delta
+    /// Only updates if the buffer window hasn't changed (to avoid treating buffer shifts as scrolls)
+    pub fn update_jsonl_position(
+        &mut self,
+        current_window: (usize, usize),
+        _avg_rendered_per_jsonl: f64,
+        total_file_lines: usize,
+        total_rendered_lines: usize,
+        viewport_height: usize,
+    ) {
+        let (win_start, win_end) = current_window;
+        let window_changed = current_window != self.last_window;
+
+        // Always recalculate at boundaries (most accurate)
+        if self.scroll_offset == 0 {
+            // At top of buffer -> position is the start of the window
+            self.estimated_jsonl_position = win_start as f64;
+        } else {
+            let max_scroll = total_rendered_lines.saturating_sub(viewport_height);
+
+            if self.scroll_offset >= max_scroll && max_scroll > 0 {
+                // At bottom of buffer -> position is the end
+                self.estimated_jsonl_position = win_end as f64;
+            } else if window_changed {
+                // Window changed (buffer shift) - maintain relative position within window
+                // Don't use scroll_offset since it was adjusted by the buffer
+                // Keep position stable - just clamp to new window bounds
+                self.estimated_jsonl_position = self
+                    .estimated_jsonl_position
+                    .max(win_start as f64)
+                    .min(win_end as f64);
+            } else if total_rendered_lines > 1 {
+                // Pure user scroll (window unchanged) - interpolate based on scroll
+                let viewport_center = self.scroll_offset as f64 + (viewport_height as f64 / 2.0);
+                let scroll_fraction = (viewport_center / total_rendered_lines as f64).min(1.0);
+                let window_size = (win_end.saturating_sub(win_start)) as f64;
+                self.estimated_jsonl_position = win_start as f64 + (scroll_fraction * window_size);
+            } else {
+                // Fallback
+                self.estimated_jsonl_position = win_start as f64;
+            }
+        }
+
+        // Clamp to valid range
+        self.estimated_jsonl_position = self
+            .estimated_jsonl_position
+            .max(0.0)
+            .min(total_file_lines as f64);
+
+        self.last_scroll_offset = self.scroll_offset;
+        self.last_window = current_window;
+    }
+
+    /// Reset JSONL position to a specific value (for jumps to start/end)
+    pub fn set_jsonl_position(&mut self, position: f64) {
+        self.estimated_jsonl_position = position;
+        self.last_scroll_offset = self.scroll_offset;
     }
 }
 

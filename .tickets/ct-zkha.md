@@ -395,3 +395,13 @@ Both `buffer.rs` and `conversation.rs` now import and use these shared functions
 - `src/main.rs`: Added text_utils module  
 - `src/logs/buffer.rs`: Import and use shared `wrap_text_line_count`, removed local version
 - `src/ui/conversation.rs`: Import and use shared `wrap_text`, removed local version
+
+## Notes
+
+**2026-02-10T01:57:08Z**
+
+Fixed scrollbar jank caused by position jumps during buffer shifts. When buffer loads new content and adjusts scroll_offset, we now detect this as a window change and keep position stable instead of treating it as a user scroll.
+
+**2026-02-10T02:07:13Z**
+
+Fixed buffer eviction bug in LoadDirection::Newer case. When loading newer entries and evicting from front, we now update window_start_line (similar to how LoadDirection::Older updates window_end_line when evicting from back). This ensures has_older() returns correct value after full traversal cycles, preventing scrolling from getting stuck.

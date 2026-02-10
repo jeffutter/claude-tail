@@ -346,13 +346,25 @@ impl EntryBuffer {
             LoadDirection::Older => {
                 // Prepending older entries - only prepend count matters for scroll adjustment
 
+                eprintln!(
+                    "[BUFFER] LoadOlder: parsed {} entries, current buffer has {} entries",
+                    merged.len(),
+                    self.entries.len()
+                );
+
                 // If parse returned no entries, don't update window or evict
                 if merged.is_empty() {
+                    eprintln!("[BUFFER] LoadOlder: empty parse result, skipping");
                     return 0;
                 }
 
                 let added_count =
                     calculate_entries_lines(&merged, content_width, show_thinking, expand_tools);
+                eprintln!(
+                    "[BUFFER] LoadOlder: adding {} entries ({} rendered lines)",
+                    merged.len(),
+                    added_count
+                );
 
                 // Check for tool result merging at boundary
                 if let Some(DisplayEntry::ToolCall { id, result, .. }) = merged.last()
@@ -376,15 +388,37 @@ impl EntryBuffer {
                 self.window_start_line = pending.target_start;
 
                 // Evict from back if over capacity (doesn't affect scroll position)
-                let total_buffered =
-                    (self.window_end_line + 1).saturating_sub(self.window_start_line);
-                if total_buffered > self.capacity {
-                    let to_evict = total_buffered - self.capacity;
+                // NOTE: Evict based on ENTRY count, not JSONL line count!
+                eprintln!(
+                    "[BUFFER] LoadOlder: window=[{}..{}], entries={}, capacity={}",
+                    self.window_start_line,
+                    self.window_end_line,
+                    self.entries.len(),
+                    self.capacity
+                );
+                if self.entries.len() > self.capacity {
+                    let to_evict = self.entries.len() - self.capacity;
+                    eprintln!(
+                        "[BUFFER] LoadOlder: evicting {} entries from back",
+                        to_evict
+                    );
                     for _ in 0..to_evict {
                         self.entries.pop_back();
-                        self.window_end_line = self.window_end_line.saturating_sub(1);
                     }
+                    // Approximate: assume each evicted entry corresponded to ~1 JSONL line
+                    // This ensures has_newer() will return true so we can reload content
+                    self.window_end_line = self.window_end_line.saturating_sub(to_evict);
+                    eprintln!(
+                        "[BUFFER] LoadOlder: adjusted window_end_line: {} -> {}",
+                        self.window_end_line + to_evict,
+                        self.window_end_line
+                    );
                 }
+                eprintln!(
+                    "[BUFFER] LoadOlder: final buffer has {} entries, returning delta={}",
+                    self.entries.len(),
+                    added_count
+                );
 
                 added_count as isize // Positive = shift scroll down
             }
@@ -419,11 +453,10 @@ impl EntryBuffer {
                 self.window_end_line = pending.target_end.saturating_sub(1);
 
                 // Evict from front if over capacity - this shifts content up
-                let total_buffered =
-                    (self.window_end_line + 1).saturating_sub(self.window_start_line);
+                // NOTE: Evict based on ENTRY count, not JSONL line count!
                 let mut evicted_count = 0;
-                if total_buffered > self.capacity {
-                    let to_evict = total_buffered - self.capacity;
+                if self.entries.len() > self.capacity {
+                    let to_evict = self.entries.len() - self.capacity;
                     for _ in 0..to_evict {
                         if let Some(entry) = self.entries.pop_front() {
                             evicted_count += calculate_entry_lines(
@@ -432,9 +465,12 @@ impl EntryBuffer {
                                 show_thinking,
                                 expand_tools,
                             );
-                            self.window_start_line += 1;
                         }
                     }
+                    // Update window_start_line to reflect evicted entries
+                    // Approximate: assume each evicted entry corresponded to ~1 JSONL line
+                    // This ensures has_older() will return true so we can reload content
+                    self.window_start_line += to_evict;
                 }
 
                 -(evicted_count as isize) // Negative = shift scroll up
