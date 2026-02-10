@@ -34,30 +34,33 @@ pub fn calculate_entry_lines(
             result,
             ..
         } => {
-            let mut count = 2; // header + input label
+            let mut count = 1; // header line
             if expand_tools {
                 let input_str = serde_json::to_string_pretty(input).unwrap_or_default();
                 count += wrap_text(&input_str, content_width).len();
             }
-            if let Some(ToolCallResult {
-                content,
-                is_error: _,
-            }) = result
-            {
-                count += 1; // result label
-                if expand_tools && !content.is_empty() {
-                    let display_content = if content.len() > 500 {
-                        let truncate_at = content
-                            .char_indices()
-                            .take_while(|(i, _)| *i < 500)
-                            .last()
-                            .map(|(i, c)| i + c.len_utf8())
-                            .unwrap_or(0);
-                        &content[..truncate_at]
+            if let Some(res) = result {
+                if expand_tools {
+                    count += 1; // separator line
+                    if res.content.is_empty() {
+                        count += 1; // empty result label
                     } else {
-                        content.as_str()
-                    };
-                    count += wrap_text(display_content, content_width).len();
+                        let display_content = if res.content.len() > 500 {
+                            let truncate_at = res
+                                .content
+                                .char_indices()
+                                .take_while(|(i, _)| *i < 500)
+                                .last()
+                                .map(|(i, c)| i + c.len_utf8())
+                                .unwrap_or(0);
+                            &res.content[..truncate_at]
+                        } else {
+                            res.content.as_str()
+                        };
+                        count += wrap_text(display_content, content_width.saturating_sub(2)).len();
+                    }
+                } else {
+                    count += 1; // collapsed result indicator
                 }
             }
             count + 1 // blank line
@@ -91,8 +94,19 @@ pub fn calculate_entry_lines(
                 1 // collapsed indicator
             }
         }
-        DisplayEntry::AgentSpawn { .. } | DisplayEntry::HookEvent { .. } => {
-            2 // single line + blank
+        DisplayEntry::HookEvent { command, .. } => {
+            let mut count = 1; // header
+            if expand_tools && command.as_ref().is_some_and(|cmd| cmd != "callback") {
+                count += 1; // command line
+            }
+            count + 1 // blank line
+        }
+        DisplayEntry::AgentSpawn { description, .. } => {
+            let mut count = 1; // header
+            if !description.is_empty() {
+                count += 1; // description line
+            }
+            count + 1 // blank line
         }
     }
 }

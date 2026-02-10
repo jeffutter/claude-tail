@@ -352,40 +352,13 @@ impl EntryBuffer {
             LoadDirection::Older => {
                 // Prepending older entries - only prepend count matters for scroll adjustment
 
-                eprintln!(
-                    "[BUFFER] LoadOlder: parsed {} entries, current buffer has {} entries",
-                    merged.len(),
-                    self.entries.len()
-                );
-
                 // If parse returned no entries, don't update window or evict
                 if merged.is_empty() {
-                    eprintln!("[BUFFER] LoadOlder: empty parse result, skipping");
                     return 0;
                 }
 
                 let added_count =
                     calculate_entries_lines(&merged, content_width, show_thinking, expand_tools);
-                eprintln!(
-                    "[BUFFER] LoadOlder: adding {} entries ({} rendered lines)",
-                    merged.len(),
-                    added_count
-                );
-
-                // Check for tool result merging at boundary
-                if let Some(DisplayEntry::ToolCall { id, result, .. }) = merged.last()
-                    && result.is_none()
-                    && let Some(DisplayEntry::ToolResult {
-                        tool_use_id,
-                        content: _,
-                        is_error: _,
-                        ..
-                    }) = self.entries.front()
-                    && tool_use_id == id
-                {
-                    // Can't easily merge backward - would need mutable access to merged vec
-                    // For now, skip this edge case (rare - requires load boundary exactly between tool call and result)
-                }
 
                 // Prepend to buffer
                 for entry in merged.into_iter().rev() {
@@ -395,36 +368,15 @@ impl EntryBuffer {
 
                 // Evict from back if over capacity (doesn't affect scroll position)
                 // NOTE: Evict based on ENTRY count, not JSONL line count!
-                eprintln!(
-                    "[BUFFER] LoadOlder: window=[{}..{}], entries={}, capacity={}",
-                    self.window_start_line,
-                    self.window_end_line,
-                    self.entries.len(),
-                    self.capacity
-                );
                 if self.entries.len() > self.capacity {
                     let to_evict = self.entries.len() - self.capacity;
-                    eprintln!(
-                        "[BUFFER] LoadOlder: evicting {} entries from back",
-                        to_evict
-                    );
                     for _ in 0..to_evict {
                         self.entries.pop_back();
                     }
                     // Approximate: assume each evicted entry corresponded to ~1 JSONL line
                     // This ensures has_newer() will return true so we can reload content
                     self.window_end_line = self.window_end_line.saturating_sub(to_evict);
-                    eprintln!(
-                        "[BUFFER] LoadOlder: adjusted window_end_line: {} -> {}",
-                        self.window_end_line + to_evict,
-                        self.window_end_line
-                    );
                 }
-                eprintln!(
-                    "[BUFFER] LoadOlder: final buffer has {} entries, returning delta={}",
-                    self.entries.len(),
-                    added_count
-                );
 
                 added_count as isize // Positive = shift scroll down
             }
@@ -541,8 +493,20 @@ fn calculate_entry_lines(
                 1 // collapsed indicator
             }
         }
-        DisplayEntry::HookEvent { .. } => 2,
-        DisplayEntry::AgentSpawn { .. } => 2,
+        DisplayEntry::HookEvent { command, .. } => {
+            let mut count = 1; // header
+            if expand_tools && command.as_ref().is_some_and(|cmd| cmd != "callback") {
+                count += 1; // command line
+            }
+            count + 1 // blank line
+        }
+        DisplayEntry::AgentSpawn { description, .. } => {
+            let mut count = 1; // header
+            if !description.is_empty() {
+                count += 1; // description line
+            }
+            count + 1 // blank line
+        }
     }
 }
 
