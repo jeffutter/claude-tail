@@ -1265,8 +1265,8 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             state.smoothed_avg_ratio =
                 alpha * avg_rendered_per_jsonl + (1.0 - alpha) * state.smoothed_avg_ratio;
 
-            // Update tracked position based on scroll delta (only if window hasn't changed)
-            state.update_jsonl_position(
+            // Update tracked position based on scroll delta
+            state.update_rendered_position(
                 (win_start, win_end),
                 state.smoothed_avg_ratio,
                 self.total_file_lines,
@@ -1274,26 +1274,26 @@ impl<'a> StatefulWidget for ConversationView<'a> {
                 inner.height as usize,
             );
 
-            // Estimate viewport size in JSONL lines using smoothed average
-            let viewport_jsonl_lines =
-                (inner.height as f64 / state.smoothed_avg_ratio).max(1.0) as usize;
+            // Estimate total rendered lines in full file
+            let estimated_total_rendered =
+                (self.total_file_lines as f64 * state.smoothed_avg_ratio).max(1.0);
 
             eprintln!(
-                "[SCROLLBAR] win=[{}..{}], scroll={}/{}, avg={:.2}, pos={:.1}, total_file={}, viewport={}",
+                "[SCROLLBAR] win=[{}..{}], scroll={}/{}, avg={:.2}, pos={:.1}, total_rendered={:.0}, viewport={}",
                 win_start,
                 win_end,
                 state.scroll_offset,
                 total_lines,
                 avg_rendered_per_jsonl,
-                state.estimated_jsonl_position,
-                self.total_file_lines,
-                viewport_jsonl_lines
+                state.estimated_rendered_position,
+                estimated_total_rendered,
+                inner.height
             );
 
             let mut scrollbar_state = ScrollbarState::default()
-                .content_length(self.total_file_lines)
-                .position(state.estimated_jsonl_position as usize)
-                .viewport_content_length(viewport_jsonl_lines);
+                .content_length(estimated_total_rendered as usize)
+                .position(state.estimated_rendered_position as usize)
+                .viewport_content_length(inner.height as usize);
 
             scrollbar.render(
                 area.inner(ratatui::layout::Margin {
@@ -1358,9 +1358,9 @@ pub struct ConversationState {
     pub scroll_offset: usize,
     pub total_lines: usize,
     pub follow_mode: bool,
-    pub estimated_jsonl_position: f64, // File-wide JSONL line position (stable across buffer shifts)
-    last_scroll_offset: usize,         // For calculating scroll deltas
-    last_window: (usize, usize),       // Previous (win_start, win_end) to detect buffer shifts
+    pub estimated_rendered_position: f64, // Estimated rendered line position in full file
+    last_scroll_offset: usize,            // For calculating scroll deltas
+    last_window: (usize, usize),          // Previous (win_start, win_end) to detect buffer shifts
     smoothed_avg_ratio: f64, // Smoothed avg rendered lines per JSONL line (for stable viewport size)
 }
 
@@ -1370,7 +1370,7 @@ impl ConversationState {
             scroll_offset: 0,
             total_lines: 0,
             follow_mode: true, // Start with follow mode enabled
-            estimated_jsonl_position: 0.0,
+            estimated_rendered_position: 0.0,
             last_scroll_offset: 0,
             last_window: (0, 0),
             smoothed_avg_ratio: 1.0,
@@ -1402,9 +1402,9 @@ impl ConversationState {
         self.follow_mode = !self.follow_mode;
     }
 
-    /// Update estimated JSONL position based on scroll delta
-    /// Uses incremental tracking for stability, boundaries for accuracy
-    pub fn update_jsonl_position(
+    /// Update estimated rendered position in full file
+    /// Tracks position as rendered lines (content volume) rather than JSONL lines
+    pub fn update_rendered_position(
         &mut self,
         current_window: (usize, usize),
         avg_rendered_per_jsonl: f64,
@@ -1412,55 +1412,62 @@ impl ConversationState {
         total_rendered_lines: usize,
         viewport_height: usize,
     ) {
-        let (win_start, win_end) = current_window;
+        let (win_start, _win_end) = current_window;
         let window_changed = current_window != self.last_window;
 
-        // At exact boundaries, snap to accurate positions
+        // Estimate total rendered lines in full file
+        let estimated_total_rendered = (total_file_lines as f64 * avg_rendered_per_jsonl).max(1.0);
+
+        // Estimate rendered lines before the current buffer window
+        let rendered_before_window = (win_start as f64 * avg_rendered_per_jsonl).max(0.0);
+
+        // At exact boundaries, calculate accurate positions
         if self.scroll_offset == 0 {
-            self.estimated_jsonl_position = win_start as f64;
+            // At top of buffer
+            self.estimated_rendered_position = rendered_before_window;
         } else {
             let max_scroll = total_rendered_lines.saturating_sub(viewport_height);
 
             if self.scroll_offset >= max_scroll && max_scroll > 0 {
-                self.estimated_jsonl_position = win_end as f64;
+                // At bottom of buffer
+                self.estimated_rendered_position =
+                    rendered_before_window + total_rendered_lines as f64;
             } else if window_changed {
-                // Window changed (buffer shift) - keep position stable, clamp to new bounds
-                self.estimated_jsonl_position = self
-                    .estimated_jsonl_position
-                    .max(win_start as f64)
-                    .min(win_end as f64);
+                // Window changed (buffer shift) - recalculate based on new window
+                // Keep relative position within window
+                let position_in_buffer = self.scroll_offset as f64;
+                self.estimated_rendered_position = rendered_before_window + position_in_buffer;
             } else {
-                // Pure user scroll - track incrementally for stability
+                // Pure user scroll - track incrementally
                 let scroll_delta =
                     (self.scroll_offset as isize) - (self.last_scroll_offset as isize);
 
-                if scroll_delta != 0 && avg_rendered_per_jsonl > 0.0 {
-                    // Estimate JSONL lines scrolled: rendered_lines / avg_rendered_per_jsonl
-                    let jsonl_delta = (scroll_delta as f64) / avg_rendered_per_jsonl;
-                    self.estimated_jsonl_position += jsonl_delta;
+                if scroll_delta != 0 {
+                    // Rendered lines scrolled is just the scroll delta
+                    self.estimated_rendered_position += scroll_delta as f64;
 
-                    // Clamp to current window bounds for safety
-                    self.estimated_jsonl_position = self
-                        .estimated_jsonl_position
-                        .max(win_start as f64)
-                        .min(win_end as f64);
+                    // Clamp to reasonable bounds
+                    let min_pos = rendered_before_window;
+                    let max_pos = rendered_before_window + total_rendered_lines as f64;
+                    self.estimated_rendered_position =
+                        self.estimated_rendered_position.max(min_pos).min(max_pos);
                 }
             }
         }
 
         // Final clamp to file bounds
-        self.estimated_jsonl_position = self
-            .estimated_jsonl_position
+        self.estimated_rendered_position = self
+            .estimated_rendered_position
             .max(0.0)
-            .min(total_file_lines as f64);
+            .min(estimated_total_rendered);
 
         self.last_scroll_offset = self.scroll_offset;
         self.last_window = current_window;
     }
 
-    /// Reset JSONL position to a specific value (for jumps to start/end)
-    pub fn set_jsonl_position(&mut self, position: f64) {
-        self.estimated_jsonl_position = position;
+    /// Reset rendered position to a specific value (for jumps to start/end)
+    pub fn set_rendered_position(&mut self, position: f64) {
+        self.estimated_rendered_position = position;
         self.last_scroll_offset = self.scroll_offset;
     }
 }

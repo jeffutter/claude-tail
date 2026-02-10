@@ -409,3 +409,7 @@ Fixed buffer eviction bug in LoadDirection::Newer case. When loading newer entri
 **2026-02-10T02:13:52Z**
 
 Improved scrollbar stability: (1) Changed position tracking from interpolation to incremental delta-based tracking - more stable, less jumpy. (2) Added exponential moving average (alpha=0.3) to smooth avg_rendered_per_jsonl ratio - reduces viewport size jitter from variable entry heights.
+
+**2026-02-10T02:23:14Z**
+
+Changed scrollbar from tracking JSONL line position to tracking rendered line position (content volume). This makes the scrollbar move proportionally to the amount of rendered content being scrolled through, rather than JSONL lines. Fixes non-uniform scrolling speed where top 60% felt fast and bottom 40% felt slow due to variable entry heights.

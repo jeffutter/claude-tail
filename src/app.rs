@@ -373,8 +373,7 @@ impl App {
                     // Reset conversation state for new file
                     self.conversation_state = ConversationState::new();
                     // Start at end of file (follow mode)
-                    let (_, win_end) = self.buffer.window_position();
-                    self.conversation_state.set_jsonl_position(win_end as f64);
+                    // Position will be updated on first render
                 }
                 Err(e) => {
                     self.error_message = Some(format!("Failed to load conversation: {}", e));

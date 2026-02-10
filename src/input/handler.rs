@@ -201,7 +201,6 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
             }
             app.conversation_state.scroll_to_top();
             app.conversation_state.follow_mode = false;
-            app.conversation_state.set_jsonl_position(0.0);
             Action::Redraw
         }
         KeyCode::Char('G') => {
@@ -220,8 +219,6 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
             }
             app.conversation_state.scroll_to_bottom(viewport_height);
             app.conversation_state.follow_mode = true;
-            let total_lines = app.buffer.total_file_lines() as f64;
-            app.conversation_state.set_jsonl_position(total_lines);
             Action::Redraw
         }
         _ => Action::None,

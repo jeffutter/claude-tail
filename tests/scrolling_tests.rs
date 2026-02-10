@@ -216,7 +216,7 @@ fn scroll_to_top(
         } else {
             1.0
         };
-        state.update_jsonl_position(
+        state.update_rendered_position(
             new_window,
             avg_rendered,
             total_file_lines,
@@ -292,7 +292,7 @@ fn scroll_to_bottom(
         } else {
             1.0
         };
-        state.update_jsonl_position(
+        state.update_rendered_position(
             new_window,
             avg_rendered,
             total_file_lines,
@@ -340,12 +340,12 @@ fn test_scrollbar_three_pass_bug() {
     let total_lines = calculate_total_lines(&buffer, content_width);
     state.total_lines = total_lines;
     state.scroll_offset = total_lines.saturating_sub(viewport_height);
-    let (_, win_end) = buffer.window_position();
-    state.set_jsonl_position(win_end as f64);
+    // Initialize position to end of rendered content
+    state.set_rendered_position(total_lines as f64);
 
     println!(
         "Initial: pos={:.1}, scroll={}/{}, window={:?}, total_file={}",
-        state.estimated_jsonl_position,
+        state.estimated_rendered_position,
         state.scroll_offset,
         total_lines,
         buffer.window_position(),
@@ -354,7 +354,7 @@ fn test_scrollbar_three_pass_bug() {
 
     // Pass 1: Scroll to top
     let pass1_iters = scroll_to_top(&mut buffer, &mut state, viewport_height, content_width);
-    let pass1_position = state.estimated_jsonl_position;
+    let pass1_position = state.estimated_rendered_position;
     let pass1_offset = state.scroll_offset;
     let pass1_window = buffer.window_position();
 
@@ -374,7 +374,7 @@ fn test_scrollbar_three_pass_bug() {
 
     // Pass 2: Scroll to bottom
     let pass2_iters = scroll_to_bottom(&mut buffer, &mut state, viewport_height, content_width);
-    let pass2_position = state.estimated_jsonl_position;
+    let pass2_position = state.estimated_rendered_position;
     let pass2_window = buffer.window_position();
 
     println!(
@@ -392,7 +392,7 @@ fn test_scrollbar_three_pass_bug() {
 
     // Pass 3: Scroll to top again (THIS IS WHERE THE BUG OCCURS)
     let pass3_iters = scroll_to_top(&mut buffer, &mut state, viewport_height, content_width);
-    let pass3_position = state.estimated_jsonl_position;
+    let pass3_position = state.estimated_rendered_position;
     let pass3_offset = state.scroll_offset;
     let pass3_window = buffer.window_position();
 
@@ -450,13 +450,13 @@ fn test_varied_heights_scrolling() {
     let total_lines = calculate_total_lines(&buffer, content_width);
     state.total_lines = total_lines;
     state.scroll_offset = total_lines.saturating_sub(viewport_height);
-    let (_, win_end) = buffer.window_position();
-    state.set_jsonl_position(win_end as f64);
+    // Initialize position to end of rendered content
+    state.set_rendered_position(total_lines as f64);
 
     println!("\n=== VARIED HEIGHTS TEST ===");
     println!(
         "Initial: pos={:.1}, scroll={}/{}, window={:?}, total_file={}",
-        state.estimated_jsonl_position,
+        state.estimated_rendered_position,
         state.scroll_offset,
         total_lines,
         buffer.window_position(),
@@ -470,7 +470,7 @@ fn test_varied_heights_scrolling() {
         println!(
             "{}: pos={:.1}, scroll={}/{}, win=[{}..{}], entries={}",
             label,
-            state.estimated_jsonl_position,
+            state.estimated_rendered_position,
             state.scroll_offset,
             total_lines,
             win_start,
@@ -485,20 +485,20 @@ fn test_varied_heights_scrolling() {
     for i in 0..100 {
         let old_offset = state.scroll_offset;
         let old_window = buffer.window_position();
-        let old_pos = state.estimated_jsonl_position;
+        let old_pos = state.estimated_rendered_position;
 
         scroll_to_top(&mut buffer, &mut state, viewport_height, content_width);
 
         if i % 10 == 0 {
             let window_changed = old_window != buffer.window_position();
-            let pos_delta = state.estimated_jsonl_position - old_pos;
+            let pos_delta = state.estimated_rendered_position - old_pos;
             println!(
                 "  Step {}: offset {} -> {}, pos {:.1} -> {:.1} (Δ={:.1}), win_changed={}",
                 step,
                 old_offset,
                 state.scroll_offset,
                 old_pos,
-                state.estimated_jsonl_position,
+                state.estimated_rendered_position,
                 pos_delta,
                 window_changed
             );
@@ -511,7 +511,7 @@ fn test_varied_heights_scrolling() {
     }
 
     print_state("After Pass 1", &state, &buffer);
-    let pass1_pos = state.estimated_jsonl_position;
+    let pass1_pos = state.estimated_rendered_position;
     let pass1_window = buffer.window_position();
 
     // Pass 2: Scroll to bottom
@@ -520,20 +520,20 @@ fn test_varied_heights_scrolling() {
     for i in 0..100 {
         let old_offset = state.scroll_offset;
         let old_window = buffer.window_position();
-        let old_pos = state.estimated_jsonl_position;
+        let old_pos = state.estimated_rendered_position;
 
         scroll_to_bottom(&mut buffer, &mut state, viewport_height, content_width);
 
         if i % 10 == 0 {
             let window_changed = old_window != buffer.window_position();
-            let pos_delta = state.estimated_jsonl_position - old_pos;
+            let pos_delta = state.estimated_rendered_position - old_pos;
             println!(
                 "  Step {}: offset {} -> {}, pos {:.1} -> {:.1} (Δ={:.1}), win_changed={}",
                 step,
                 old_offset,
                 state.scroll_offset,
                 old_pos,
-                state.estimated_jsonl_position,
+                state.estimated_rendered_position,
                 pos_delta,
                 window_changed
             );
@@ -555,20 +555,20 @@ fn test_varied_heights_scrolling() {
     for i in 0..100 {
         let old_offset = state.scroll_offset;
         let old_window = buffer.window_position();
-        let old_pos = state.estimated_jsonl_position;
+        let old_pos = state.estimated_rendered_position;
 
         scroll_to_top(&mut buffer, &mut state, viewport_height, content_width);
 
         if i % 10 == 0 || i < 5 {
             let window_changed = old_window != buffer.window_position();
-            let pos_delta = state.estimated_jsonl_position - old_pos;
+            let pos_delta = state.estimated_rendered_position - old_pos;
             println!(
                 "  Step {}: offset {} -> {}, pos {:.1} -> {:.1} (Δ={:.1}), win_changed={}",
                 step,
                 old_offset,
                 state.scroll_offset,
                 old_pos,
-                state.estimated_jsonl_position,
+                state.estimated_rendered_position,
                 pos_delta,
                 window_changed
             );
@@ -581,7 +581,7 @@ fn test_varied_heights_scrolling() {
     }
 
     print_state("After Pass 3", &state, &buffer);
-    let pass3_pos = state.estimated_jsonl_position;
+    let pass3_pos = state.estimated_rendered_position;
     let pass3_window = buffer.window_position();
 
     // Assertions
@@ -620,13 +620,13 @@ fn test_small_buffer_three_pass() {
     let total_lines = calculate_total_lines(&buffer, content_width);
     state.total_lines = total_lines;
     state.scroll_offset = total_lines.saturating_sub(viewport_height);
-    let (_, win_end) = buffer.window_position();
-    state.set_jsonl_position(win_end as f64);
+    // Initialize position to end of rendered content
+    state.set_rendered_position(total_lines as f64);
 
     println!("\n=== SMALL BUFFER TEST (capacity=100, file=1000) ===");
     println!(
         "Initial: pos={:.1}, scroll={}/{}, window={:?}",
-        state.estimated_jsonl_position,
+        state.estimated_rendered_position,
         state.scroll_offset,
         total_lines,
         buffer.window_position()
@@ -635,7 +635,7 @@ fn test_small_buffer_three_pass() {
     // Pass 1: Scroll to top
     println!("\n--- Pass 1: Bottom → Top ---");
     let pass1_iters = scroll_to_top(&mut buffer, &mut state, viewport_height, content_width);
-    let pass1_pos = state.estimated_jsonl_position;
+    let pass1_pos = state.estimated_rendered_position;
     let pass1_window = buffer.window_position();
     println!(
         "Pass 1 ({} iters): pos={:.1}, scroll={}, window={:?}",
@@ -645,7 +645,7 @@ fn test_small_buffer_three_pass() {
     // Pass 2: Scroll to bottom
     println!("\n--- Pass 2: Top → Bottom ---");
     let pass2_iters = scroll_to_bottom(&mut buffer, &mut state, viewport_height, content_width);
-    let pass2_pos = state.estimated_jsonl_position;
+    let pass2_pos = state.estimated_rendered_position;
     let pass2_window = buffer.window_position();
     println!(
         "Pass 2 ({} iters): pos={:.1}, scroll={}, window={:?}",
@@ -655,7 +655,7 @@ fn test_small_buffer_three_pass() {
     // Pass 3: Scroll to top AGAIN - THIS IS THE BUG
     println!("\n--- Pass 3: Bottom → Top AGAIN (BUG EXPECTED HERE) ---");
     let pass3_iters = scroll_to_top(&mut buffer, &mut state, viewport_height, content_width);
-    let pass3_pos = state.estimated_jsonl_position;
+    let pass3_pos = state.estimated_rendered_position;
     let pass3_window = buffer.window_position();
     println!(
         "Pass 3 ({} iters): pos={:.1}, scroll={}, window={:?}",
@@ -696,10 +696,10 @@ fn test_position_monotonicity_during_scroll() {
 
     // Start at top
     state.scroll_offset = 0;
-    let (win_start, _) = buffer.window_position();
-    state.set_jsonl_position(win_start as f64);
+    // Position at top of buffer is 0 rendered lines from start
+    state.set_rendered_position(0.0);
 
-    let mut prev_position = state.estimated_jsonl_position;
+    let mut prev_position = state.estimated_rendered_position;
 
     // Scroll down - position should monotonically increase
     for i in 0..10 {
@@ -710,7 +710,7 @@ fn test_position_monotonicity_during_scroll() {
         let (win_start, win_end) = buffer.window_position();
         let total_lines = calculate_total_lines(&buffer, 80);
         state.total_lines = total_lines;
-        state.update_jsonl_position(
+        state.update_rendered_position(
             (win_start, win_end),
             0.5,
             buffer.total_file_lines(),
@@ -718,7 +718,7 @@ fn test_position_monotonicity_during_scroll() {
             viewport_height,
         );
 
-        let current_position = state.estimated_jsonl_position;
+        let current_position = state.estimated_rendered_position;
 
         println!(
             "PageDown {}: pos={:.1}, delta={:.1}, scroll={}, window={:?}",
@@ -752,7 +752,7 @@ fn test_position_monotonicity_during_scroll() {
         let (win_start, win_end) = buffer.window_position();
         let total_lines = calculate_total_lines(&buffer, 80);
         state.total_lines = total_lines;
-        state.update_jsonl_position(
+        state.update_rendered_position(
             (win_start, win_end),
             0.5,
             buffer.total_file_lines(),
@@ -760,7 +760,7 @@ fn test_position_monotonicity_during_scroll() {
             viewport_height,
         );
 
-        let current_position = state.estimated_jsonl_position;
+        let current_position = state.estimated_rendered_position;
 
         println!(
             "PageUp {}: pos={:.1}, delta={:.1}, scroll={}, window={:?}",
