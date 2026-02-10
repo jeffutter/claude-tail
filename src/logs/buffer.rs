@@ -211,6 +211,12 @@ impl EntryBuffer {
         &self.parse_errors
     }
 
+    /// Clear rate limit for testing (allows rapid successive loads)
+    #[doc(hidden)]
+    pub fn clear_rate_limit(&mut self) {
+        self.last_load_time = None;
+    }
+
     /// Request loading older entries. Returns None if already loading or nothing to load.
     /// Returns Some((path, byte_start, byte_end)) for the caller to spawn a parse task.
     pub fn request_load_older(&mut self, count: usize) -> Option<(PathBuf, u64, u64)> {

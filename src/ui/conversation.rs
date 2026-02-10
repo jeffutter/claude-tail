@@ -938,7 +938,7 @@ impl<'a> ConversationView<'a> {
     }
 
     /// Calculate total lines that would be rendered for all entries
-    fn calculate_total_lines(&self, width: usize) -> usize {
+    pub fn calculate_total_lines(&self, width: usize) -> usize {
         let content_width = width.saturating_sub(4);
         self.entries
             .iter()
@@ -957,7 +957,7 @@ impl<'a> ConversationView<'a> {
     /// * `width` - Total content width for text wrapping
     /// * `viewport_start` - First line to include (scroll offset)
     /// * `viewport_height` - Number of lines in the visible viewport
-    fn render_entries(
+    pub fn render_entries(
         &self,
         width: usize,
         viewport_start: usize,
