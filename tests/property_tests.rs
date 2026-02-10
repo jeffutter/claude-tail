@@ -205,8 +205,9 @@ fn arb_agent_spawn() -> impl Strategy<Value = String> {
         })
 }
 
-/// Generate a Vec of JSONL lines forming a valid conversation
-fn arb_jsonl_entries(max_entries: usize) -> impl Strategy<Value = Vec<String>> {
+/// Generate a Vec of JSONL lines forming a valid conversation (includes tool calls).
+/// Each group is 1-2 JSONL lines, so max_groups=50 guarantees <= 100 JSONL lines.
+fn arb_jsonl_entries(max_groups: usize) -> impl Strategy<Value = Vec<String>> {
     proptest::collection::vec(
         prop_oneof![
             4 => arb_user_message().prop_map(|s| vec![s]),
@@ -216,9 +217,24 @@ fn arb_jsonl_entries(max_entries: usize) -> impl Strategy<Value = Vec<String>> {
             1 => arb_hook_event().prop_map(|s| vec![s]),
             1 => arb_agent_spawn().prop_map(|s| vec![s]),
         ],
-        1..=max_entries,
+        1..=max_groups,
     )
     .prop_map(|groups| groups.into_iter().flatten().collect())
+}
+
+/// Generate JSONL lines without tool calls (no merge_tool_results boundary issues).
+/// Each group is exactly 1 JSONL line, so the count equals the line count.
+fn arb_jsonl_no_tools(max_lines: usize) -> impl Strategy<Value = Vec<String>> {
+    proptest::collection::vec(
+        prop_oneof![
+            4 => arb_user_message(),
+            4 => arb_assistant_text(),
+            1 => arb_thinking(),
+            1 => arb_hook_event(),
+            1 => arb_agent_spawn(),
+        ],
+        1..=max_lines,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +383,54 @@ fn extract_viewport_text(
         .collect()
 }
 
+/// Render ALL lines from a set of entries (for checking that a viewport
+/// appears somewhere in the full output).
+fn render_all_lines(entries: &VecDeque<DisplayEntry>, render_width: usize) -> Vec<String> {
+    let theme = Theme::default();
+    let view = ConversationView::new(
+        entries,
+        false,
+        &theme,
+        SHOW_THINKING,
+        EXPAND_TOOLS,
+        false,
+        0,
+        (0, 0),
+    );
+
+    let total = compute_total_lines(entries, CONTENT_WIDTH);
+    // Render from offset 0 with enough height to get everything
+    let (lines, _) = view.render_entries(render_width, 0, total);
+
+    lines
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// Check if `needle` (the SUT viewport) appears as a contiguous subsequence
+/// somewhere in `haystack` (the reference's full rendered lines).
+/// Empty needles trivially match.
+fn is_contiguous_subsequence(needle: &[String], haystack: &[String]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    for start in 0..=(haystack.len() - needle.len()) {
+        if haystack[start..start + needle.len()] == *needle {
+            return Some(start);
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // SUT driver
 // ---------------------------------------------------------------------------
@@ -454,13 +518,12 @@ fn settle_buffer(
         if state.scroll_offset < threshold && buffer.has_older() {
             buffer.clear_rate_limit();
             if let Some((path, start, end)) = buffer.request_load_older(40) {
-                let lines_before = compute_total_lines(buffer.entries(), content_width);
                 let result = parse_jsonl_range(&path, start, end);
-                buffer.receive_loaded(result, content_width, SHOW_THINKING, EXPAND_TOOLS);
-                let lines_after = compute_total_lines(buffer.entries(), content_width);
-                let accurate_delta = lines_after as isize - lines_before as isize;
-                if accurate_delta > 0 {
-                    state.scroll_offset = (state.scroll_offset as isize + accurate_delta) as usize;
+                let scroll_delta =
+                    buffer.receive_loaded(result, content_width, SHOW_THINKING, EXPAND_TOOLS);
+                if scroll_delta != 0 {
+                    state.scroll_offset =
+                        (state.scroll_offset as isize + scroll_delta).max(0) as usize;
                 }
                 loaded = true;
             }
@@ -475,8 +538,12 @@ fn settle_buffer(
             buffer.clear_rate_limit();
             if let Some((path, start, end)) = buffer.request_load_newer(40) {
                 let result = parse_jsonl_range(&path, start, end);
-                buffer.receive_loaded(result, content_width, SHOW_THINKING, EXPAND_TOOLS);
-                // Loading newer doesn't change scroll_offset — new content is below
+                let scroll_delta =
+                    buffer.receive_loaded(result, content_width, SHOW_THINKING, EXPAND_TOOLS);
+                if scroll_delta != 0 {
+                    state.scroll_offset =
+                        (state.scroll_offset as isize + scroll_delta).max(0) as usize;
+                }
                 loaded = true;
             }
         }
@@ -527,9 +594,11 @@ proptest! {
         .. ProptestConfig::default()
     })]
 
+    /// Test scroll math with all entry types (including tool calls).
+    /// Limited to 50 groups so the file always fits in the buffer (max 100 JSONL lines).
     #[test]
     fn scroll_model_equivalence(
-        jsonl_lines in arb_jsonl_entries(200),
+        jsonl_lines in arb_jsonl_entries(50),
         ops in arb_scroll_ops(200),
     ) {
         // Skip trivially empty files
@@ -554,14 +623,6 @@ proptest! {
         let mut buffer = EntryBuffer::new(BUFFER_CAPACITY);
         buffer.load_file(&path).unwrap();
         let mut state = ConversationState::new();
-
-        // Verify the buffer loaded all entries. If the file has too many JSONL
-        // lines to fit in the buffer, the SUT will have a truncated view with
-        // potentially different merge_tool_results at the boundary.
-        // Skip these cases — they test loading strategy, not scroll math.
-        if buffer.entries().len() != ref_model.entries.len() {
-            return Ok(());
-        }
 
         // Both start at the bottom (follow mode).
         state.total_lines = compute_total_lines(buffer.entries(), CONTENT_WIDTH);
@@ -618,6 +679,96 @@ proptest! {
                 buffer.entries().len(),
                 ref_model.entries.len(),
             );
+        }
+    }
+
+    /// Test windowed scrolling with buffer loading and eviction.
+    /// Uses only non-tool entries so merge_tool_results is a no-op and
+    /// load boundary placement can't cause entry count differences.
+    /// Files exceed the 100-entry buffer capacity, forcing eviction.
+    ///
+    /// The reference model has all entries and uses absolute scroll_offset.
+    /// The SUT has a windowed buffer with buffer-relative scroll_offset.
+    /// We compare only the rendered viewport content (not offsets), since
+    /// the coordinate systems differ.
+    #[test]
+    fn windowed_scroll_equivalence(
+        jsonl_lines in arb_jsonl_no_tools(400).prop_filter(
+            "need more lines than buffer capacity",
+            |lines| lines.len() > BUFFER_CAPACITY,
+        ),
+        ops in arb_scroll_ops(200),
+    ) {
+        let (_temp_dir, path) = write_jsonl_file(&jsonl_lines);
+
+        // Parse entire file -> reference model
+        let full_parse = parse_jsonl_file(&path).unwrap();
+        let all_entries = merge_tool_results(full_parse.entries);
+
+        if all_entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut ref_model = ReferenceModel::new(all_entries, VIEWPORT_HEIGHT, CONTENT_WIDTH);
+
+        // Load file with EntryBuffer (small capacity forces eviction)
+        let mut buffer = EntryBuffer::new(BUFFER_CAPACITY);
+        buffer.load_file(&path).unwrap();
+        let mut state = ConversationState::new();
+
+        // Both start at the bottom (follow mode).
+        state.total_lines = compute_total_lines(buffer.entries(), CONTENT_WIDTH);
+        state.scroll_offset = state.total_lines.saturating_sub(VIEWPORT_HEIGHT);
+        state.follow_mode = false;
+
+        let render_width = CONTENT_WIDTH + 4;
+
+        // Pre-render all reference lines once (entries don't change, only scroll offset).
+        let ref_all_entries: VecDeque<DisplayEntry> =
+            ref_model.entries.iter().cloned().collect();
+        let ref_all_lines = render_all_lines(&ref_all_entries, render_width);
+
+        for (i, &op) in ops.iter().enumerate() {
+            ref_model.apply(op);
+            apply_to_sut(&mut buffer, &mut state, op, VIEWPORT_HEIGHT, CONTENT_WIDTH);
+
+            // The windowed buffer may not hold all entries, so its max_scroll
+            // differs from the reference's. This means exact viewport equality
+            // is too strict — scroll_down can clamp to different positions.
+            // Instead, verify the SUT viewport is a valid contiguous window
+            // into the reference's full rendered output.
+            let sut_viewport = extract_viewport_text(
+                buffer.entries(),
+                state.scroll_offset,
+                VIEWPORT_HEIGHT,
+                render_width,
+            );
+
+            let sut_non_empty: Vec<&String> =
+                sut_viewport.iter().filter(|l| !l.trim().is_empty()).collect();
+
+            if !sut_non_empty.is_empty() {
+                prop_assert!(
+                    is_contiguous_subsequence(&sut_viewport, &ref_all_lines).is_some(),
+                    "SUT viewport not found in reference output after op #{} {:?}\n\
+                     ref_offset={}, sut_offset={}, ref_total={}, sut_total={}\n\
+                     sut_window={:?}, sut_entries={}, ref_entries={}\n\
+                     SUT viewport ({} lines):\n{}\n\
+                     Ref all lines ({} lines)",
+                    i,
+                    op,
+                    ref_model.scroll_offset,
+                    state.scroll_offset,
+                    ref_model.total_lines,
+                    state.total_lines,
+                    buffer.window_position(),
+                    buffer.entries().len(),
+                    ref_model.entries.len(),
+                    sut_viewport.len(),
+                    sut_viewport.iter().take(10).cloned().collect::<Vec<_>>().join("\n"),
+                    ref_all_lines.len(),
+                );
+            }
         }
     }
 }
