@@ -1259,22 +1259,16 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             let buffered_jsonl_lines = (win_end.saturating_sub(win_start)).max(1) as f64;
             let avg_rendered_per_jsonl = total_lines as f64 / buffered_jsonl_lines;
 
-            // Smooth the average ratio using exponential moving average (alpha=0.3)
-            // This reduces viewport size jitter from variable entry heights
-            let alpha = 0.3;
-            state.smoothed_avg_ratio =
-                alpha * avg_rendered_per_jsonl + (1.0 - alpha) * state.smoothed_avg_ratio;
-
-            // Update tracked position based on scroll delta
+            // Update tracked position. EMA smoothing happens inside, only when state changes.
             state.update_rendered_position(
                 (win_start, win_end),
-                state.smoothed_avg_ratio,
+                avg_rendered_per_jsonl,
                 self.total_file_lines,
                 total_lines,
                 inner.height as usize,
             );
 
-            // Estimate total rendered lines in full file
+            // Estimate total rendered lines in full file using smoothed ratio
             let estimated_total_rendered =
                 (self.total_file_lines as f64 * state.smoothed_avg_ratio).max(1.0);
 
@@ -1402,8 +1396,9 @@ impl ConversationState {
         self.follow_mode = !self.follow_mode;
     }
 
-    /// Update estimated rendered position in full file
-    /// Tracks position as rendered lines (content volume) rather than JSONL lines
+    /// Update estimated rendered position in full file.
+    /// Only recalculates when scroll_offset or window actually changed, to prevent
+    /// oscillation from EMA updates on every render frame (the loop redraws every 100ms).
     pub fn update_rendered_position(
         &mut self,
         current_window: (usize, usize),
@@ -1412,16 +1407,24 @@ impl ConversationState {
         total_rendered_lines: usize,
         viewport_height: usize,
     ) {
-        let (win_start, _win_end) = current_window;
         let window_changed = current_window != self.last_window;
+        let scroll_changed = self.scroll_offset != self.last_scroll_offset;
 
-        // Estimate total rendered lines in full file
-        let estimated_total_rendered = (total_file_lines as f64 * avg_rendered_per_jsonl).max(1.0);
+        // Skip update entirely if nothing changed - prevents oscillation from repeated redraws
+        if !window_changed && !scroll_changed {
+            return;
+        }
 
-        // Estimate rendered lines before the current buffer window
-        let rendered_before_window = (win_start as f64 * avg_rendered_per_jsonl).max(0.0);
+        let (win_start, _win_end) = current_window;
 
-        // At exact boundaries, calculate accurate positions
+        // Update smoothed ratio only when state actually changes (not every frame)
+        let alpha = 0.3;
+        self.smoothed_avg_ratio =
+            alpha * avg_rendered_per_jsonl + (1.0 - alpha) * self.smoothed_avg_ratio;
+
+        let estimated_total_rendered = (total_file_lines as f64 * self.smoothed_avg_ratio).max(1.0);
+        let rendered_before_window = (win_start as f64 * self.smoothed_avg_ratio).max(0.0);
+
         if self.scroll_offset == 0 {
             // At top of buffer
             self.estimated_rendered_position = rendered_before_window;
@@ -1433,25 +1436,20 @@ impl ConversationState {
                 self.estimated_rendered_position =
                     rendered_before_window + total_rendered_lines as f64;
             } else if window_changed {
-                // Window changed (buffer shift) - recalculate based on new window
-                // Keep relative position within window
-                let position_in_buffer = self.scroll_offset as f64;
-                self.estimated_rendered_position = rendered_before_window + position_in_buffer;
+                // Window shifted (buffer loaded) - recalculate from new window base
+                self.estimated_rendered_position =
+                    rendered_before_window + self.scroll_offset as f64;
             } else {
-                // Pure user scroll - track incrementally
+                // Pure user scroll - track incrementally (most accurate, no drift)
                 let scroll_delta =
                     (self.scroll_offset as isize) - (self.last_scroll_offset as isize);
+                self.estimated_rendered_position += scroll_delta as f64;
 
-                if scroll_delta != 0 {
-                    // Rendered lines scrolled is just the scroll delta
-                    self.estimated_rendered_position += scroll_delta as f64;
-
-                    // Clamp to reasonable bounds
-                    let min_pos = rendered_before_window;
-                    let max_pos = rendered_before_window + total_rendered_lines as f64;
-                    self.estimated_rendered_position =
-                        self.estimated_rendered_position.max(min_pos).min(max_pos);
-                }
+                // Clamp to buffer bounds
+                let min_pos = rendered_before_window;
+                let max_pos = rendered_before_window + total_rendered_lines as f64;
+                self.estimated_rendered_position =
+                    self.estimated_rendered_position.max(min_pos).min(max_pos);
             }
         }
 
