@@ -1353,7 +1353,7 @@ pub struct ConversationState {
     pub total_lines: usize,
     pub follow_mode: bool,
     pub estimated_rendered_position: f64, // Estimated rendered line position in full file
-    last_scroll_offset: usize,            // For calculating scroll deltas
+    pending_user_scroll: isize,           // User-intended scroll (not buffer adjustments)
     last_window: (usize, usize),          // Previous (win_start, win_end) to detect buffer shifts
     smoothed_avg_ratio: f64, // Smoothed avg rendered lines per JSONL line (for stable viewport size)
 }
@@ -1365,7 +1365,7 @@ impl ConversationState {
             total_lines: 0,
             follow_mode: true, // Start with follow mode enabled
             estimated_rendered_position: 0.0,
-            last_scroll_offset: 0,
+            pending_user_scroll: 0,
             last_window: (0, 0),
             smoothed_avg_ratio: 1.0,
         }
@@ -1374,12 +1374,16 @@ impl ConversationState {
     pub fn scroll_down(&mut self, amount: usize, viewport_height: usize) {
         self.follow_mode = false;
         let max_scroll = self.total_lines.saturating_sub(viewport_height);
+        let old = self.scroll_offset;
         self.scroll_offset = (self.scroll_offset + amount).min(max_scroll);
+        self.pending_user_scroll += (self.scroll_offset - old) as isize;
     }
 
     pub fn scroll_up(&mut self, amount: usize) {
         self.follow_mode = false;
+        let old = self.scroll_offset;
         self.scroll_offset = self.scroll_offset.saturating_sub(amount);
+        self.pending_user_scroll -= (old - self.scroll_offset) as isize;
     }
 
     pub fn scroll_to_top(&mut self) {
@@ -1408,10 +1412,11 @@ impl ConversationState {
         viewport_height: usize,
     ) {
         let window_changed = current_window != self.last_window;
-        let scroll_changed = self.scroll_offset != self.last_scroll_offset;
+        let has_pending = self.pending_user_scroll != 0;
 
-        // Skip update entirely if nothing changed - prevents oscillation from repeated redraws
-        if !window_changed && !scroll_changed {
+        // Skip update if nothing to do
+        if !window_changed && !has_pending {
+            self.last_window = current_window;
             return;
         }
 
@@ -1425,31 +1430,30 @@ impl ConversationState {
         let estimated_total_rendered = (total_file_lines as f64 * self.smoothed_avg_ratio).max(1.0);
         let rendered_before_window = (win_start as f64 * self.smoothed_avg_ratio).max(0.0);
 
+        // Snap to accurate boundary positions
         if self.scroll_offset == 0 {
-            // At top of buffer
             self.estimated_rendered_position = rendered_before_window;
         } else {
             let max_scroll = total_rendered_lines.saturating_sub(viewport_height);
-
             if self.scroll_offset >= max_scroll && max_scroll > 0 {
-                // At bottom of buffer
                 self.estimated_rendered_position =
                     rendered_before_window + total_rendered_lines as f64;
-            } else if window_changed {
-                // Window shifted (buffer loaded) - recalculate from new window base
-                self.estimated_rendered_position =
-                    rendered_before_window + self.scroll_offset as f64;
-            } else {
-                // Pure user scroll - track incrementally (most accurate, no drift)
-                let scroll_delta =
-                    (self.scroll_offset as isize) - (self.last_scroll_offset as isize);
-                self.estimated_rendered_position += scroll_delta as f64;
+            } else if has_pending {
+                // Apply only the user's intentional scroll, ignoring buffer adjustments.
+                // Buffer loads adjust scroll_offset to maintain the same view — they
+                // must NOT move the scrollbar position.
+                self.estimated_rendered_position += self.pending_user_scroll as f64;
 
                 // Clamp to buffer bounds
                 let min_pos = rendered_before_window;
                 let max_pos = rendered_before_window + total_rendered_lines as f64;
                 self.estimated_rendered_position =
                     self.estimated_rendered_position.max(min_pos).min(max_pos);
+            } else if window_changed {
+                // Window shifted without user input (e.g. follow mode / file watcher).
+                // Recalculate from current position in buffer.
+                self.estimated_rendered_position =
+                    rendered_before_window + self.scroll_offset as f64;
             }
         }
 
@@ -1459,14 +1463,13 @@ impl ConversationState {
             .max(0.0)
             .min(estimated_total_rendered);
 
-        self.last_scroll_offset = self.scroll_offset;
+        self.pending_user_scroll = 0;
         self.last_window = current_window;
     }
 
     /// Reset rendered position to a specific value (for jumps to start/end)
     pub fn set_rendered_position(&mut self, position: f64) {
         self.estimated_rendered_position = position;
-        self.last_scroll_offset = self.scroll_offset;
     }
 }
 
