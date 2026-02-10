@@ -1213,14 +1213,6 @@ impl<'a> StatefulWidget for ConversationView<'a> {
         // Calculate total lines first for follow mode and scrolling
         let total_lines = self.calculate_total_lines(padded.width as usize);
 
-        eprintln!(
-            "[RENDER] entries={}, total_lines={}, offset={}, viewport={}",
-            self.entries.len(),
-            total_lines,
-            state.scroll_offset,
-            inner.height
-        );
-
         // Update state with total lines for scrollbar
         state.total_lines = total_lines;
 
@@ -1231,12 +1223,18 @@ impl<'a> StatefulWidget for ConversationView<'a> {
 
         // Clamp scroll offset
         let max_scroll = total_lines.saturating_sub(inner.height as usize);
-        let old_offset = state.scroll_offset;
+        let pre_clamp = state.scroll_offset;
         state.scroll_offset = state.scroll_offset.min(max_scroll);
-        if old_offset != state.scroll_offset {
-            eprintln!(
-                "[RENDER] Clamped offset: {} -> {} (max={})",
-                old_offset, state.scroll_offset, max_scroll
+        if pre_clamp != state.scroll_offset {
+            tracing::debug!(
+                pre_clamp,
+                clamped_to = state.scroll_offset,
+                max_scroll,
+                total_lines,
+                viewport_height = inner.height,
+                content_width = padded.width as usize - 4,
+                entry_count = self.entries.len(),
+                "Render clamped scroll_offset"
             );
         }
 
@@ -1285,18 +1283,6 @@ impl<'a> StatefulWidget for ConversationView<'a> {
             // Estimate total rendered lines in full file using smoothed ratio
             let estimated_total_rendered =
                 (self.total_file_lines as f64 * state.smoothed_avg_ratio).max(1.0);
-
-            eprintln!(
-                "[SCROLLBAR] win=[{}..{}], scroll={}/{}, avg={:.2}, pos={:.1}, total_rendered={:.0}, viewport={}",
-                win_start,
-                win_end,
-                state.scroll_offset,
-                total_lines,
-                avg_rendered_per_jsonl,
-                state.estimated_rendered_position,
-                estimated_total_rendered,
-                inner.height
-            );
 
             let mut scrollbar_state = ScrollbarState::default()
                 .content_length(estimated_total_rendered as usize)

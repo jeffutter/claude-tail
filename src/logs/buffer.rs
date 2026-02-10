@@ -29,6 +29,8 @@ struct PendingLoad {
 pub struct EntryBuffer {
     index: LineIndex,
     entries: VecDeque<DisplayEntry>,
+    /// How many JSONL lines each display entry consumed (1 normally, 2 for merged ToolCall+ToolResult)
+    source_lines: VecDeque<usize>,
     /// JSONL line index of the first entry in the buffer
     window_start_line: usize,
     /// JSONL line index of the last entry in the buffer (inclusive)
@@ -43,6 +45,29 @@ pub struct EntryBuffer {
     last_load_time: Option<std::time::Instant>,
 }
 
+/// Compute source_lines from merged entries, given the JSONL line count that produced them.
+/// Each ToolCall with result.is_some() consumed 2 JSONL lines; everything else consumed 1.
+fn compute_source_lines(entries: &[DisplayEntry], jsonl_count: usize) -> VecDeque<usize> {
+    let mut lines: VecDeque<usize> = entries
+        .iter()
+        .map(|e| match e {
+            DisplayEntry::ToolCall {
+                result: Some(_), ..
+            } => 2,
+            _ => 1,
+        })
+        .collect();
+    // Adjust if sum doesn't match jsonl_count (edge cases)
+    let sum: usize = lines.iter().sum();
+    if sum != jsonl_count
+        && !lines.is_empty()
+        && let Some(last) = lines.back_mut()
+    {
+        *last = last.saturating_add(jsonl_count.saturating_sub(sum));
+    }
+    lines
+}
+
 impl EntryBuffer {
     /// Create a new EntryBuffer with the specified capacity
     pub fn new(capacity: usize) -> Self {
@@ -52,6 +77,7 @@ impl EntryBuffer {
                 LineIndex::build(&PathBuf::from("/dev/null")).unwrap()
             }),
             entries: VecDeque::new(),
+            source_lines: VecDeque::new(),
             window_start_line: 0,
             window_end_line: 0,
             capacity,
@@ -69,6 +95,7 @@ impl EntryBuffer {
         self.index = LineIndex::build(path)?;
         self.path = path.to_path_buf();
         self.entries.clear();
+        self.source_lines.clear();
         self.parse_errors.clear();
         self.pending_load = None;
 
@@ -92,6 +119,8 @@ impl EntryBuffer {
         self.parse_errors = parse_result.errors;
 
         let merged = merge_tool_results(parse_result.entries);
+        let jsonl_count = end_line - start_line;
+        self.source_lines = compute_source_lines(&merged, jsonl_count);
         self.entries = VecDeque::from(merged);
         self.window_start_line = start_line;
         self.window_end_line = end_line.saturating_sub(1);
@@ -134,6 +163,8 @@ impl EntryBuffer {
 
         let merged_new = merge_tool_results(parse_result.entries);
         let new_count = merged_new.len();
+        let new_jsonl_count = new_end - old_end;
+        let mut new_source_lines = compute_source_lines(&merged_new, new_jsonl_count);
 
         // Check for tool result merging at boundary
         if let Some(DisplayEntry::ToolCall { id, result, .. }) = self.entries.back_mut()
@@ -151,10 +182,18 @@ impl EntryBuffer {
                 content: content.clone(),
                 is_error: *is_error,
             });
+            // Update source_lines: last existing entry now covers its original line + the merged result line
+            if let Some(last_sl) = self.source_lines.back_mut()
+                && let Some(first_new_sl) = new_source_lines.pop_front()
+            {
+                *last_sl += first_new_sl;
+            }
             // Skip the first entry since we merged it
             self.entries.extend(merged_new.into_iter().skip(1));
+            self.source_lines.extend(new_source_lines);
         } else {
             self.entries.extend(merged_new);
+            self.source_lines.extend(new_source_lines);
         }
 
         self.window_end_line = new_end.saturating_sub(1);
@@ -162,11 +201,14 @@ impl EntryBuffer {
         // Evict old entries from front if over capacity
         let total_buffered = (self.window_end_line + 1).saturating_sub(self.window_start_line);
         if total_buffered > self.capacity {
-            let to_evict = total_buffered - self.capacity;
-            for _ in 0..to_evict {
+            let jsonl_to_evict = total_buffered - self.capacity;
+            let mut evicted_jsonl = 0;
+            while evicted_jsonl < jsonl_to_evict && !self.entries.is_empty() {
                 self.entries.pop_front();
-                self.window_start_line += 1;
+                let sl = self.source_lines.pop_front().unwrap_or(1);
+                evicted_jsonl += sl;
             }
+            self.window_start_line += evicted_jsonl;
         }
 
         Ok(new_count)
@@ -199,6 +241,19 @@ impl EntryBuffer {
     /// Current window position as (start_line, end_line) for scrollbar
     pub fn window_position(&self) -> (usize, usize) {
         (self.window_start_line, self.window_end_line)
+    }
+
+    /// Total rendered lines for all buffered entries
+    pub fn total_rendered_lines(
+        &self,
+        content_width: usize,
+        show_thinking: bool,
+        expand_tools: bool,
+    ) -> usize {
+        self.entries
+            .iter()
+            .map(|entry| calculate_entry_lines(entry, content_width, show_thinking, expand_tools))
+            .sum()
     }
 
     /// Whether an async load is in flight
@@ -347,35 +402,44 @@ impl EntryBuffer {
 
         self.parse_errors.extend(parse_result.errors);
         let merged = merge_tool_results(parse_result.entries);
+        let jsonl_count = pending.target_end.saturating_sub(pending.target_start);
 
         match pending.direction {
             LoadDirection::Older => {
                 // Prepending older entries - only prepend count matters for scroll adjustment
 
-                // If parse returned no entries, don't update window or evict
                 if merged.is_empty() {
+                    // Advance window even when parse produced no entries
+                    self.window_start_line = pending.target_start;
                     return 0;
                 }
 
                 let added_count =
                     calculate_entries_lines(&merged, content_width, show_thinking, expand_tools);
 
-                // Prepend to buffer
+                let new_source_lines = compute_source_lines(&merged, jsonl_count);
+
+                // Prepend source_lines and entries
+                for sl in new_source_lines.into_iter().rev() {
+                    self.source_lines.push_front(sl);
+                }
                 for entry in merged.into_iter().rev() {
                     self.entries.push_front(entry);
                 }
                 self.window_start_line = pending.target_start;
 
                 // Evict from back if over capacity (doesn't affect scroll position)
-                // NOTE: Evict based on ENTRY count, not JSONL line count!
-                if self.entries.len() > self.capacity {
-                    let to_evict = self.entries.len() - self.capacity;
-                    for _ in 0..to_evict {
+                let total_buffered =
+                    (self.window_end_line + 1).saturating_sub(self.window_start_line);
+                if total_buffered > self.capacity {
+                    let jsonl_to_evict = total_buffered - self.capacity;
+                    let mut evicted_jsonl = 0;
+                    while evicted_jsonl < jsonl_to_evict && !self.entries.is_empty() {
                         self.entries.pop_back();
+                        let sl = self.source_lines.pop_back().unwrap_or(1);
+                        evicted_jsonl += sl;
                     }
-                    // Approximate: assume each evicted entry corresponded to ~1 JSONL line
-                    // This ensures has_newer() will return true so we can reload content
-                    self.window_end_line = self.window_end_line.saturating_sub(to_evict);
+                    self.window_end_line = self.window_end_line.saturating_sub(evicted_jsonl);
                 }
 
                 added_count as isize // Positive = shift scroll down
@@ -383,10 +447,13 @@ impl EntryBuffer {
             LoadDirection::Newer => {
                 // Appending newer entries - only front eviction matters for scroll adjustment
 
-                // If parse returned no entries, don't update window or evict
                 if merged.is_empty() {
+                    // Advance window even when parse produced no entries
+                    self.window_end_line = pending.target_end.saturating_sub(1);
                     return 0;
                 }
+
+                let mut new_source_lines = compute_source_lines(&merged, jsonl_count);
 
                 // Check for tool result merging at boundary
                 if let Some(DisplayEntry::ToolCall { id, result, .. }) = self.entries.back_mut()
@@ -403,19 +470,29 @@ impl EntryBuffer {
                         content: content.clone(),
                         is_error: *is_error,
                     });
+                    // Update source_lines: absorb the first new entry's lines into the last existing
+                    if let Some(last_sl) = self.source_lines.back_mut()
+                        && let Some(first_new_sl) = new_source_lines.pop_front()
+                    {
+                        *last_sl += first_new_sl;
+                    }
                     self.entries.extend(merged.into_iter().skip(1));
+                    self.source_lines.extend(new_source_lines);
                 } else {
                     self.entries.extend(merged);
+                    self.source_lines.extend(new_source_lines);
                 }
 
                 self.window_end_line = pending.target_end.saturating_sub(1);
 
                 // Evict from front if over capacity - this shifts content up
-                // NOTE: Evict based on ENTRY count, not JSONL line count!
                 let mut evicted_count = 0;
-                if self.entries.len() > self.capacity {
-                    let to_evict = self.entries.len() - self.capacity;
-                    for _ in 0..to_evict {
+                let total_buffered =
+                    (self.window_end_line + 1).saturating_sub(self.window_start_line);
+                if total_buffered > self.capacity {
+                    let jsonl_to_evict = total_buffered - self.capacity;
+                    let mut evicted_jsonl = 0;
+                    while evicted_jsonl < jsonl_to_evict && !self.entries.is_empty() {
                         if let Some(entry) = self.entries.pop_front() {
                             evicted_count += calculate_entry_lines(
                                 &entry,
@@ -424,11 +501,10 @@ impl EntryBuffer {
                                 expand_tools,
                             );
                         }
+                        let sl = self.source_lines.pop_front().unwrap_or(1);
+                        evicted_jsonl += sl;
                     }
-                    // Update window_start_line to reflect evicted entries
-                    // Approximate: assume each evicted entry corresponded to ~1 JSONL line
-                    // This ensures has_older() will return true so we can reload content
-                    self.window_start_line += to_evict;
+                    self.window_start_line += evicted_jsonl;
                 }
 
                 -(evicted_count as isize) // Negative = shift scroll up
@@ -436,6 +512,9 @@ impl EntryBuffer {
             LoadDirection::Replace => {
                 // Replace entire buffer - caller should reset scroll_offset
                 self.entries.clear();
+                self.source_lines.clear();
+                let new_source_lines = compute_source_lines(&merged, jsonl_count);
+                self.source_lines = new_source_lines;
                 self.entries = VecDeque::from(merged);
                 self.window_start_line = pending.target_start;
                 self.window_end_line = pending.target_end.saturating_sub(1);
@@ -681,5 +760,462 @@ mod tests {
         let request = buffer.request_load_newer(3);
         assert!(request.is_some());
         assert!(buffer.is_loading());
+    }
+
+    fn tool_use_entry(id: &str, name: &str, input: &str) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": { "command": input }
+                }]
+            }
+        })
+        .to_string()
+    }
+
+    fn tool_result_entry(tool_use_id: &str, content: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
+                    "is_error": false
+                }]
+            }
+        })
+        .to_string()
+    }
+
+    fn assistant_entry(text: &str) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": text
+            }
+        })
+        .to_string()
+    }
+
+    /// Build a file with tool call pairs interleaved with messages.
+    /// If long_text is true, generates realistic long content that stresses text wrapping.
+    /// Returns (file, total_jsonl_lines).
+    fn build_tool_file_ex(line_count: usize, long_text: bool) -> (NamedTempFile, usize) {
+        let mut file = NamedTempFile::new().unwrap();
+        let mut total = 0;
+        for i in 0..line_count {
+            if i % 3 == 0 {
+                // Tool call pair = 2 JSONL lines
+                let id = format!("toolu_{:010}", i);
+                let cmd = if long_text {
+                    format!(
+                        "grep -r 'function.*{}' src/ --include='*.ts' --include='*.tsx' | head -50 && echo 'searching for pattern {} in the codebase to find all matching functions and their locations'",
+                        i, i
+                    )
+                } else {
+                    format!("cmd {}", i)
+                };
+                let output = if long_text {
+                    format!(
+                        "src/components/Widget{}.tsx:42:  export function handleUpdate{}(state: AppState, action: Action): Result<AppState, Error> {{\nsrc/components/Widget{}.tsx:85:  function processEvent{}(event: Event, context: Context): void {{\nsrc/utils/helpers{}.ts:12:  export function formatData{}(input: RawData[], options?: FormatOptions): FormattedOutput[] {{",
+                        i, i, i, i, i, i
+                    )
+                } else {
+                    format!("output {}", i)
+                };
+                writeln!(file, "{}", tool_use_entry(&id, "Bash", &cmd)).unwrap();
+                writeln!(file, "{}", tool_result_entry(&id, &output)).unwrap();
+                total += 2;
+            } else if i % 3 == 1 {
+                let msg = if long_text {
+                    format!(
+                        "Can you help me debug this issue? When I run the test suite for module {} it fails with an assertion error on line {}. The expected output was supposed to match the snapshot but the formatting seems different. I've tried running it with different flags but nothing works.",
+                        i,
+                        i * 10
+                    )
+                } else {
+                    format!("msg {}", i)
+                };
+                writeln!(file, "{}", user_entry(&msg)).unwrap();
+                total += 1;
+            } else {
+                let reply = if long_text {
+                    format!(
+                        "I'll help you debug that test failure in module {}. The assertion error on line {} suggests a formatting mismatch. This commonly happens when the snapshot was generated with a different version of the formatter. Let me check the test configuration and the snapshot file to identify the exact discrepancy. First, let me look at the test file to understand what's being tested.",
+                        i,
+                        i * 10
+                    )
+                } else {
+                    format!("reply {}", i)
+                };
+                writeln!(file, "{}", assistant_entry(&reply)).unwrap();
+                total += 1;
+            }
+        }
+        file.flush().unwrap();
+        (file, total)
+    }
+
+    fn build_tool_file(line_count: usize) -> (NamedTempFile, usize) {
+        build_tool_file_ex(line_count, false)
+    }
+
+    #[test]
+    fn test_load_older_with_tool_merging_tracks_window() {
+        // 20 groups = mix of tool pairs (2 lines) and messages (1 line)
+        let (file, total_jsonl) = build_tool_file(20);
+
+        let mut buffer = EntryBuffer::new(8);
+        buffer.load_file(file.path()).unwrap();
+
+        assert_eq!(buffer.total_file_lines(), total_jsonl);
+        assert!(buffer.has_older());
+
+        let (_, initial_end) = buffer.window_position();
+
+        // Load older
+        buffer.clear_rate_limit();
+        if let Some((path, start, end)) = buffer.request_load_older(5) {
+            let result = parse_jsonl_range(&path, start, end);
+            buffer.receive_loaded(result, 80, false, false);
+        }
+
+        let (new_start, new_end) = buffer.window_position();
+
+        // Window start should have moved backward
+        assert!(new_start < initial_end, "window_start should move backward");
+        // Window end may have shrunk due to eviction, but should still be valid
+        assert!(new_end >= new_start, "window_end >= window_start");
+        // source_lines should be in sync with entries
+        assert_eq!(
+            buffer.source_lines.len(),
+            buffer.entries().len(),
+            "source_lines and entries must stay in sync"
+        );
+        // Sum of source_lines should equal the JSONL window range
+        let source_sum: usize = buffer.source_lines.iter().sum();
+        let expected_jsonl = (new_end + 1).saturating_sub(new_start);
+        assert_eq!(
+            source_sum, expected_jsonl,
+            "source_lines sum ({}) should equal JSONL window size ({})",
+            source_sum, expected_jsonl
+        );
+    }
+
+    #[test]
+    fn test_load_newer_with_tool_merging_tracks_window() {
+        let (file, _total_jsonl) = build_tool_file(20);
+
+        // Load from start (via jump to start)
+        let mut buffer = EntryBuffer::new(8);
+        buffer.load_file(file.path()).unwrap();
+
+        // Jump to start
+        if let Some((path, start, end)) = buffer.request_jump_to_start() {
+            let result = parse_jsonl_range(&path, start, end);
+            buffer.receive_loaded(result, 80, false, false);
+        }
+
+        assert!(buffer.has_newer(), "should have newer content");
+        let (initial_start, _) = buffer.window_position();
+
+        // Load newer
+        buffer.clear_rate_limit();
+        if let Some((path, start, end)) = buffer.request_load_newer(5) {
+            let result = parse_jsonl_range(&path, start, end);
+            buffer.receive_loaded(result, 80, false, false);
+        }
+
+        let (new_start, new_end) = buffer.window_position();
+
+        // Window end should have advanced
+        assert!(new_end > initial_start, "window_end should advance");
+        // source_lines should be in sync
+        assert_eq!(
+            buffer.source_lines.len(),
+            buffer.entries().len(),
+            "source_lines and entries must stay in sync"
+        );
+        let source_sum: usize = buffer.source_lines.iter().sum();
+        let expected_jsonl = (new_end + 1).saturating_sub(new_start);
+        assert_eq!(
+            source_sum, expected_jsonl,
+            "source_lines sum ({}) should equal JSONL window size ({})",
+            source_sum, expected_jsonl
+        );
+
+        // If eviction happened, has_older should still report correctly
+        if new_start > 0 {
+            assert!(
+                buffer.has_older(),
+                "should still report has_older after eviction"
+            );
+        }
+    }
+
+    #[test]
+    fn test_empty_parse_advances_window() {
+        let mut file = NamedTempFile::new().unwrap();
+        for i in 1..=10 {
+            writeln!(file, "{}", user_entry(&format!("line {}", i))).unwrap();
+        }
+        file.flush().unwrap();
+
+        let mut buffer = EntryBuffer::new(5);
+        buffer.load_file(file.path()).unwrap();
+
+        assert!(buffer.has_older());
+        let (initial_start, _) = buffer.window_position();
+
+        // Manually create a pending load that will parse an empty range
+        // We'll simulate this by requesting a load and providing an empty result
+        buffer.clear_rate_limit();
+        if let Some((_path, _start, _end)) = buffer.request_load_older(3) {
+            // Provide empty parse result
+            let empty_result = Ok(ParseResult {
+                entries: Vec::new(),
+                errors: Vec::new(),
+                bytes_read: 0,
+            });
+            buffer.receive_loaded(empty_result, 80, false, false);
+        }
+
+        let (new_start, _) = buffer.window_position();
+        // Window should have advanced even with empty result
+        assert!(
+            new_start < initial_start,
+            "window_start should advance on empty parse (was {}, now {})",
+            initial_start,
+            new_start
+        );
+    }
+
+    /// Simulate the EXACT handler behavior for PageUp scrolling through a large file.
+    /// Uses the RENDER's line counting (standalone calculate_entry_lines from conversation.rs)
+    /// for the clamping step, while the buffer uses its own line counting for scroll_delta.
+    /// This catches mismatches between the two.
+    #[test]
+    fn test_pageup_simulation_reaches_top() {
+        use crate::ui::conversation::calculate_entry_lines as render_calc;
+
+        // Test with both short and long text
+        for long_text in [false, true] {
+            // Build a file with 400 JSONL lines (mix of tool pairs and messages)
+            let (file, total_jsonl) = build_tool_file_ex(300, long_text);
+            assert!(total_jsonl > 100, "need file larger than buffer capacity");
+
+            let capacity = 100;
+            let mut buffer = EntryBuffer::new(capacity);
+            buffer.load_file(file.path()).unwrap();
+
+            let content_width = 190; // Typical terminal width after borders/padding
+            let viewport_height = 46;
+            let threshold = viewport_height / 2; // 23
+            let show_thinking = false;
+
+            // Test both expand_tools=false and expand_tools=true
+            for expand_tools in [false, true] {
+                // Reload for each test
+                buffer.load_file(file.path()).unwrap();
+
+                // Use RENDER's line counting for total_lines (this is what the real render does)
+                let render_total = |buf: &EntryBuffer| -> usize {
+                    buf.entries()
+                        .iter()
+                        .map(|e| render_calc(e, content_width, show_thinking, expand_tools))
+                        .sum()
+                };
+
+                let mut total_lines = render_total(&buffer);
+                let mut scroll_offset: usize = total_lines.saturating_sub(viewport_height);
+
+                eprintln!(
+                    "\n=== long_text={}, expand_tools={} ===",
+                    long_text, expand_tools
+                );
+                eprintln!(
+                    "Initial: total_jsonl={}, total_lines={}, scroll_offset={}, window=({}, {})",
+                    total_jsonl,
+                    total_lines,
+                    scroll_offset,
+                    buffer.window_position().0,
+                    buffer.window_position().1
+                );
+
+                let max_presses = 200;
+                let mut prev_window_start = buffer.window_position().0;
+                let mut stall_count = 0;
+
+                for press in 0..max_presses {
+                    // === scroll_up (matches handler) ===
+                    scroll_offset = scroll_offset.saturating_sub(viewport_height);
+
+                    // === check_and_trigger_load (matches handler) ===
+                    // Load up to 5 batches when near the top
+                    if scroll_offset < threshold && buffer.has_older() {
+                        for _ in 0..5 {
+                            if !buffer.has_older() {
+                                break;
+                            }
+                            buffer.clear_rate_limit();
+                            if let Some((path, start, end)) = buffer.request_load_older(40) {
+                                let result = parse_jsonl_range(&path, start, end);
+                                let scroll_delta = buffer.receive_loaded(
+                                    result,
+                                    content_width,
+                                    show_thinking,
+                                    expand_tools,
+                                );
+                                if scroll_delta != 0 {
+                                    scroll_offset =
+                                        (scroll_offset as isize + scroll_delta).max(0) as usize;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    // === Simulate render clamping (using RENDER's total_lines) ===
+                    total_lines = render_total(&buffer);
+                    let max_scroll = total_lines.saturating_sub(viewport_height);
+                    if scroll_offset > max_scroll {
+                        eprintln!(
+                            "  CLAMP at press {}: scroll_offset {} -> {} (max_scroll={}, total_lines={})",
+                            press, scroll_offset, max_scroll, max_scroll, total_lines
+                        );
+                    }
+                    scroll_offset = scroll_offset.min(max_scroll);
+
+                    let (win_start, win_end) = buffer.window_position();
+
+                    // Check for reaching the top
+                    if win_start == 0 && !buffer.has_older() {
+                        eprintln!("  Reached top at press {}", press);
+                        break;
+                    }
+
+                    // Check for stall
+                    if win_start == prev_window_start && scroll_offset == 0 && buffer.has_older() {
+                        stall_count += 1;
+                        if stall_count > 5 {
+                            // Also check the buffer vs render line count mismatch
+                            let buffer_total: usize = buffer
+                                .entries()
+                                .iter()
+                                .map(|e| {
+                                    calculate_entry_lines(
+                                        e,
+                                        content_width,
+                                        show_thinking,
+                                        expand_tools,
+                                    )
+                                })
+                                .sum();
+                            eprintln!(
+                                "STALLED at press {}: window=({}, {}), has_older={}, \
+                            render_total_lines={}, buffer_total_lines={}, mismatch={}",
+                                press,
+                                win_start,
+                                win_end,
+                                buffer.has_older(),
+                                total_lines,
+                                buffer_total,
+                                total_lines as isize - buffer_total as isize
+                            );
+                            panic!(
+                                "Scrolling stalled with expand_tools={}! window_start={}, \
+                            {} JSONL lines unreachable.",
+                                expand_tools, win_start, win_start
+                            );
+                        }
+                    } else {
+                        stall_count = 0;
+                    }
+
+                    prev_window_start = win_start;
+
+                    if press % 20 == 0 {
+                        eprintln!(
+                            "  Press {}: offset={}, window=({}, {}), lines={}, has_older={}",
+                            press,
+                            scroll_offset,
+                            win_start,
+                            win_end,
+                            total_lines,
+                            buffer.has_older()
+                        );
+                    }
+                }
+
+                let (final_start, _) = buffer.window_position();
+                assert_eq!(
+                    final_start, 0,
+                    "long_text={}, expand_tools={}: Should reach top, but stopped at JSONL line {}",
+                    long_text, expand_tools, final_start
+                );
+            }
+        } // end for long_text
+    }
+
+    #[test]
+    fn test_full_traversal_with_tools() {
+        // Build a file large enough to exceed buffer
+        let (file, total_jsonl) = build_tool_file(30);
+        assert!(total_jsonl > 10, "need enough lines to exceed buffer");
+
+        let mut buffer = EntryBuffer::new(10);
+        buffer.load_file(file.path()).unwrap();
+
+        // Start at tail - load older until we reach the beginning
+        let mut iterations = 0;
+        while buffer.has_older() && iterations < 50 {
+            buffer.clear_rate_limit();
+            if let Some((path, start, end)) = buffer.request_load_older(5) {
+                let result = parse_jsonl_range(&path, start, end);
+                buffer.receive_loaded(result, 80, false, false);
+            } else {
+                break;
+            }
+            iterations += 1;
+
+            // Verify invariant: source_lines stays in sync
+            assert_eq!(buffer.source_lines.len(), buffer.entries().len());
+        }
+
+        let (start_pos, _) = buffer.window_position();
+        assert_eq!(start_pos, 0, "should reach file start");
+
+        // Now traverse forward to the end
+        iterations = 0;
+        while buffer.has_newer() && iterations < 50 {
+            buffer.clear_rate_limit();
+            if let Some((path, start, end)) = buffer.request_load_newer(5) {
+                let result = parse_jsonl_range(&path, start, end);
+                buffer.receive_loaded(result, 80, false, false);
+            } else {
+                break;
+            }
+            iterations += 1;
+
+            assert_eq!(buffer.source_lines.len(), buffer.entries().len());
+        }
+
+        let (_, end_pos) = buffer.window_position();
+        assert_eq!(
+            end_pos,
+            total_jsonl - 1,
+            "should reach file end (expected {}, got {})",
+            total_jsonl - 1,
+            end_pos
+        );
     }
 }

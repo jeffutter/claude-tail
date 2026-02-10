@@ -771,4 +771,131 @@ proptest! {
             }
         }
     }
+
+    /// Test full traversal with tool calls (which cause merge_tool_results).
+    /// Files exceed the buffer capacity, forcing eviction.
+    /// Verifies that JumpToStart lands at the top and JumpToEnd lands at the bottom,
+    /// and the viewport content matches the reference at both extremes.
+    #[test]
+    fn full_traversal_with_tools(
+        jsonl_lines in arb_jsonl_entries(200).prop_filter(
+            "need more lines than buffer capacity",
+            |lines| lines.len() > BUFFER_CAPACITY,
+        ),
+    ) {
+        let (_temp_dir, path) = write_jsonl_file(&jsonl_lines);
+
+        // Parse entire file -> reference model
+        let full_parse = parse_jsonl_file(&path).unwrap();
+        let all_entries = merge_tool_results(full_parse.entries);
+
+        if all_entries.is_empty() {
+            return Ok(());
+        }
+
+        let ref_model = ReferenceModel::new(all_entries, VIEWPORT_HEIGHT, CONTENT_WIDTH);
+        let render_width = CONTENT_WIDTH + 4;
+
+        // Pre-render all reference lines
+        let ref_all_entries: VecDeque<DisplayEntry> =
+            ref_model.entries.iter().cloned().collect();
+        let ref_all_lines = render_all_lines(&ref_all_entries, render_width);
+
+        // Load file with EntryBuffer (buffer smaller than file)
+        let mut buffer = EntryBuffer::new(BUFFER_CAPACITY);
+        buffer.load_file(&path).unwrap();
+        let mut state = ConversationState::new();
+
+        // Start at bottom (follow mode)
+        state.total_lines = compute_total_lines(buffer.entries(), CONTENT_WIDTH);
+        state.scroll_offset = state.total_lines.saturating_sub(VIEWPORT_HEIGHT);
+        state.follow_mode = false;
+
+        // Test 2 full cycles to detect drift
+        for cycle in 0..2 {
+            // Jump to start and settle
+            apply_to_sut(&mut buffer, &mut state, ScrollOp::JumpToStart, VIEWPORT_HEIGHT, CONTENT_WIDTH);
+
+            // Verify SUT viewport at top is a contiguous subsequence of reference
+            let sut_top_viewport = extract_viewport_text(
+                buffer.entries(),
+                state.scroll_offset,
+                VIEWPORT_HEIGHT,
+                render_width,
+            );
+
+            let sut_top_non_empty: Vec<&String> =
+                sut_top_viewport.iter().filter(|l| !l.trim().is_empty()).collect();
+
+            if !sut_top_non_empty.is_empty() {
+                let top_pos = is_contiguous_subsequence(&sut_top_viewport, &ref_all_lines);
+                prop_assert!(
+                    top_pos.is_some(),
+                    "Cycle {}: SUT viewport at top not found in reference\n\
+                     sut_offset={}, sut_total={}, sut_window={:?}, sut_entries={}\n\
+                     SUT viewport ({} lines):\n{}",
+                    cycle,
+                    state.scroll_offset,
+                    state.total_lines,
+                    buffer.window_position(),
+                    buffer.entries().len(),
+                    sut_top_viewport.len(),
+                    sut_top_viewport.iter().take(5).cloned().collect::<Vec<_>>().join("\n"),
+                );
+
+                // Viewport at top should start near the beginning of the reference
+                if let Some(pos) = top_pos {
+                    prop_assert!(
+                        pos < VIEWPORT_HEIGHT * 2,
+                        "Cycle {}: Top viewport starts at line {} in reference, expected near 0",
+                        cycle,
+                        pos,
+                    );
+                }
+            }
+
+            // Jump to end and settle
+            apply_to_sut(&mut buffer, &mut state, ScrollOp::JumpToEnd, VIEWPORT_HEIGHT, CONTENT_WIDTH);
+
+            // Verify SUT viewport at bottom
+            let sut_bottom_viewport = extract_viewport_text(
+                buffer.entries(),
+                state.scroll_offset,
+                VIEWPORT_HEIGHT,
+                render_width,
+            );
+
+            let sut_bottom_non_empty: Vec<&String> =
+                sut_bottom_viewport.iter().filter(|l| !l.trim().is_empty()).collect();
+
+            if !sut_bottom_non_empty.is_empty() {
+                let bottom_pos = is_contiguous_subsequence(&sut_bottom_viewport, &ref_all_lines);
+                prop_assert!(
+                    bottom_pos.is_some(),
+                    "Cycle {}: SUT viewport at bottom not found in reference\n\
+                     sut_offset={}, sut_total={}, sut_window={:?}, sut_entries={}\n\
+                     SUT viewport ({} lines):\n{}",
+                    cycle,
+                    state.scroll_offset,
+                    state.total_lines,
+                    buffer.window_position(),
+                    buffer.entries().len(),
+                    sut_bottom_viewport.len(),
+                    sut_bottom_viewport.iter().take(5).cloned().collect::<Vec<_>>().join("\n"),
+                );
+
+                // Viewport at bottom should end near the end of the reference
+                if let Some(pos) = bottom_pos {
+                    let end_pos = pos + sut_bottom_viewport.len();
+                    prop_assert!(
+                        end_pos + VIEWPORT_HEIGHT * 2 >= ref_all_lines.len(),
+                        "Cycle {}: Bottom viewport ends at line {} but reference has {} lines",
+                        cycle,
+                        end_pos,
+                        ref_all_lines.len(),
+                    );
+                }
+            }
+        }
+    }
 }

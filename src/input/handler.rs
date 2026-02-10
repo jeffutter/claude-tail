@@ -190,7 +190,7 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
 
             // Jump to start - synchronous load
             if let Some((path, start, end)) = app.buffer.request_jump_to_start() {
-                let content_width = app.viewport_height.unwrap_or(80);
+                let content_width = app.viewport_width.unwrap_or(80);
                 let result = parse_jsonl_range(&path, start, end);
                 app.buffer.receive_loaded(
                     result,
@@ -208,7 +208,7 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
 
             // Jump to end - synchronous load
             if let Some((path, start, end)) = app.buffer.request_jump_to_end() {
-                let content_width = app.viewport_height.unwrap_or(80);
+                let content_width = app.viewport_width.unwrap_or(80);
                 let result = parse_jsonl_range(&path, start, end);
                 app.buffer.receive_loaded(
                     result,
@@ -225,69 +225,85 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
     }
 }
 
-/// Check if we're near buffer edges and trigger load if needed
+/// Check if we're near buffer edges and trigger loads.
+/// When loading is needed, loads multiple batches to fill the buffer toward the edge,
+/// rather than stopping after one batch when scroll_delta pushes offset above threshold.
 fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
     use crate::logs::parse_jsonl_range;
 
+    let content_width = app.viewport_width.unwrap_or(80);
+    let viewport_height = app.viewport_height.unwrap_or(20);
     let scroll_offset = app.conversation_state.scroll_offset;
-    let total_lines = app.conversation_state.total_lines;
-    let content_width = app.viewport_height.unwrap_or(80);
-
-    eprintln!(
-        "[SCROLL] offset={}, total={}, threshold={}, entries={}",
-        scroll_offset,
-        total_lines,
-        threshold,
-        app.buffer.entries().len()
-    );
 
     // Near top - load older entries
-    if scroll_offset < threshold
-        && app.buffer.has_older()
-        && let Some((path, start, end)) = app.buffer.request_load_older(load_count)
-    {
-        eprintln!("[LOAD] Loading older: bytes {}..{}", start, end);
-        // Synchronous load - fast enough (<1ms for 20-40 lines)
-        let result = parse_jsonl_range(&path, start, end);
-        let entries_before = app.buffer.entries().len();
-        let scroll_delta =
-            app.buffer
-                .receive_loaded(result, content_width, app.show_thinking, app.expand_tools);
-        let entries_after = app.buffer.entries().len();
-        eprintln!(
-            "[LOAD] Loaded older: entries {} -> {}, delta={}",
-            entries_before, entries_after, scroll_delta
-        );
-        if scroll_delta != 0 {
-            let old_offset = app.conversation_state.scroll_offset;
-            app.conversation_state.scroll_offset =
-                (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
-            eprintln!(
-                "[LOAD] Adjusted offset: {} -> {}",
-                old_offset, app.conversation_state.scroll_offset
-            );
+    if scroll_offset < threshold && app.buffer.has_older() {
+        // Load up to 5 batches to fill the buffer toward the beginning
+        for _ in 0..5 {
+            if !app.buffer.has_older() {
+                break;
+            }
+            app.buffer.clear_rate_limit();
+            if let Some((path, start, end)) = app.buffer.request_load_older(load_count) {
+                let result = parse_jsonl_range(&path, start, end);
+                let scroll_delta = app.buffer.receive_loaded(
+                    result,
+                    content_width,
+                    app.show_thinking,
+                    app.expand_tools,
+                );
+                if scroll_delta != 0 {
+                    app.conversation_state.scroll_offset =
+                        (app.conversation_state.scroll_offset as isize + scroll_delta).max(0)
+                            as usize;
+                }
+                tracing::debug!(
+                    scroll_delta,
+                    new_offset = app.conversation_state.scroll_offset,
+                    win_start = app.buffer.window_position().0,
+                    win_end = app.buffer.window_position().1,
+                    "Loaded older batch"
+                );
+            } else {
+                break;
+            }
         }
     }
 
     // Near bottom - load newer entries
-    let scroll_offset = app.conversation_state.scroll_offset; // Re-read after potential adjustment
-    let viewport_height = app.viewport_height.unwrap_or(20);
+    let scroll_offset = app.conversation_state.scroll_offset;
     if scroll_offset
         > app
             .conversation_state
             .total_lines
             .saturating_sub(viewport_height + threshold)
         && app.buffer.has_newer()
-        && let Some((path, start, end)) = app.buffer.request_load_newer(load_count)
     {
-        // Synchronous load - fast enough (<1ms for 20-40 lines)
-        let result = parse_jsonl_range(&path, start, end);
-        let scroll_delta =
-            app.buffer
-                .receive_loaded(result, content_width, app.show_thinking, app.expand_tools);
-        if scroll_delta != 0 {
-            app.conversation_state.scroll_offset =
-                (app.conversation_state.scroll_offset as isize + scroll_delta).max(0) as usize;
+        for _ in 0..5 {
+            if !app.buffer.has_newer() {
+                break;
+            }
+            app.buffer.clear_rate_limit();
+            if let Some((path, start, end)) = app.buffer.request_load_newer(load_count) {
+                let result = parse_jsonl_range(&path, start, end);
+                let scroll_delta = app.buffer.receive_loaded(
+                    result,
+                    content_width,
+                    app.show_thinking,
+                    app.expand_tools,
+                );
+                if scroll_delta != 0 {
+                    app.conversation_state.scroll_offset =
+                        (app.conversation_state.scroll_offset as isize + scroll_delta).max(0)
+                            as usize;
+                }
+            } else {
+                break;
+            }
         }
     }
+
+    // Update total_lines after loading
+    app.conversation_state.total_lines =
+        app.buffer
+            .total_rendered_lines(content_width, app.show_thinking, app.expand_tools);
 }

@@ -216,8 +216,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
     let layout = AppLayout::new(size, layout_config);
 
-    // Update viewport height for scrolling calculations
+    // Update viewport dimensions for scrolling calculations
     app.viewport_height = Some(layout.conversation.height.saturating_sub(2) as usize);
+    // content_width must match render: borders(-2) + padding(-2) + render_entries prefix(-4) = -8
+    app.viewport_width = Some(layout.conversation.width.saturating_sub(8) as usize);
 
     // Draw header
     draw_header(frame, layout.header, app);

@@ -55,6 +55,7 @@ pub struct App {
     pub expand_tools: bool,
     pub show_help: bool,
     pub viewport_height: Option<usize>,
+    pub viewport_width: Option<usize>,
     pub error_message: Option<String>,
     /// Channel receiver for async parse results (now used for scroll loads)
     pub parse_rx: mpsc::UnboundedReceiver<ParseMessage>,
@@ -104,6 +105,7 @@ impl App {
             expand_tools: true,
             show_help: false,
             viewport_height: None,
+            viewport_width: None,
             error_message: None,
             parse_rx,
             parse_tx,
@@ -385,7 +387,7 @@ impl App {
     /// Handle completed parse result from async scroll load
     pub fn handle_parse_complete(&mut self, _path: PathBuf, result: Result<ParseResult>) {
         // Get content width for line calculations
-        let content_width = self.viewport_height.unwrap_or(80);
+        let content_width = self.viewport_width.unwrap_or(80);
 
         let scroll_delta = self.buffer.receive_loaded(
             result,
@@ -543,6 +545,7 @@ impl Default for App {
                 expand_tools: true,
                 show_help: false,
                 viewport_height: None,
+                viewport_width: None,
                 error_message: Some("Failed to initialize application".to_string()),
                 parse_rx,
                 parse_tx,
