@@ -13,8 +13,9 @@ use super::styles::Theme;
 use crate::logs::{DisplayEntry, ToolCallResult};
 use crate::text_utils::wrap_text;
 
-/// Calculate how many lines an entry would generate when rendered
-/// This is a standalone version for testing and other uses outside of ConversationView
+/// Calculate how many lines an entry would generate when rendered.
+/// This is the SINGLE source of truth for line counting — the instance method
+/// and buffer.rs both delegate to this function.
 pub fn calculate_entry_lines(
     entry: &DisplayEntry,
     content_width: usize,
@@ -29,16 +30,165 @@ pub fn calculate_entry_lines(
             1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
         }
         DisplayEntry::ToolCall {
-            name: _,
+            name,
             input,
             result,
             ..
         } => {
-            let mut count = 1; // header line
-            if expand_tools {
-                let input_str = serde_json::to_string_pretty(input).unwrap_or_default();
-                count += wrap_text(&input_str, content_width).len();
-            }
+            let parsed: Option<serde_json::Value> = serde_json::from_str(input).ok();
+
+            // Tool body lines — matches render_tool_call per-tool logic
+            let mut count = match name.as_str() {
+                "Bash" => {
+                    let mut c = 1; // header
+                    if expand_tools
+                        && let Some(command) = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("command"))
+                            .and_then(|v| v.as_str())
+                        && !command.is_empty()
+                    {
+                        c += wrap_text(command, content_width.saturating_sub(2)).len();
+                    }
+                    c
+                }
+                "Read" => {
+                    let mut c = 1; // header
+                    if expand_tools {
+                        let offset = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("offset"))
+                            .and_then(|v| v.as_u64());
+                        let limit = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("limit"))
+                            .and_then(|v| v.as_u64());
+                        if offset.is_some() || limit.is_some() {
+                            c += 1; // range line
+                        }
+                    }
+                    c
+                }
+                "Write" => {
+                    let mut c = 1; // header
+                    if expand_tools
+                        && let Some(content) = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("content"))
+                            .and_then(|v| v.as_str())
+                    {
+                        let line_count = content.lines().count();
+                        if line_count > 0 {
+                            c += line_count.min(5);
+                            if line_count > 5 {
+                                c += 1; // "more lines" indicator
+                            }
+                        }
+                    }
+                    c
+                }
+                "Edit" => {
+                    let mut c = 1; // header
+                    if expand_tools {
+                        if let Some(old_string) = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("old_string"))
+                            .and_then(|v| v.as_str())
+                            && !old_string.is_empty()
+                        {
+                            c += 1; // "- old:" label
+                            c += old_string.lines().count().min(3);
+                            if old_string.lines().count() > 3 {
+                                c += 1; // "more lines" indicator
+                            }
+                        }
+                        if let Some(new_string) = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("new_string"))
+                            .and_then(|v| v.as_str())
+                            && !new_string.is_empty()
+                        {
+                            c += 1; // "+ new:" label
+                            c += new_string.lines().count().min(3);
+                            if new_string.lines().count() > 3 {
+                                c += 1; // "more lines" indicator
+                            }
+                        }
+                    }
+                    c
+                }
+                "Grep" => {
+                    let mut c = 1; // header
+                    if expand_tools {
+                        let has_path = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("path"))
+                            .and_then(|v| v.as_str())
+                            .is_some();
+                        let has_glob = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("glob"))
+                            .and_then(|v| v.as_str())
+                            .is_some();
+                        if has_path || has_glob {
+                            c += 1; // details line
+                        }
+                    }
+                    c
+                }
+                "Glob" => {
+                    let mut c = 1; // header
+                    if expand_tools
+                        && parsed
+                            .as_ref()
+                            .and_then(|v| v.get("path"))
+                            .and_then(|v| v.as_str())
+                            .is_some()
+                    {
+                        c += 1; // path line
+                    }
+                    c
+                }
+                "Task" => {
+                    let mut c = 1; // header
+                    if expand_tools
+                        && let Some(prompt) = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("prompt"))
+                            .and_then(|v| v.as_str())
+                        && !prompt.is_empty()
+                    {
+                        let display_prompt = if prompt.len() > 300 {
+                            &prompt[..300]
+                        } else {
+                            prompt
+                        };
+                        c += wrap_text(display_prompt, content_width.saturating_sub(2)).len();
+                    }
+                    c
+                }
+                "TodoWrite" => {
+                    let mut c = 1; // header
+                    if expand_tools
+                        && let Some(todos) = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("todos"))
+                            .and_then(|v| v.as_array())
+                    {
+                        c += todos.len(); // one line per todo item
+                    }
+                    c
+                }
+                _ => {
+                    let mut c = 1; // header
+                    if expand_tools && !input.is_empty() {
+                        c += wrap_text(input, content_width).len();
+                    }
+                    c
+                }
+            };
+
+            // Inline result lines — matches calculate_inline_result_lines
             if let Some(res) = result {
                 if expand_tools {
                     count += 1; // separator line
@@ -63,6 +213,7 @@ pub fn calculate_entry_lines(
                     count += 1; // collapsed result indicator
                 }
             }
+
             count + 1 // blank line
         }
         DisplayEntry::ToolResult {
@@ -670,285 +821,8 @@ impl<'a> ConversationView<'a> {
 
     /// Calculate how many lines an entry would generate without actually rendering
     fn calculate_entry_lines(&self, entry: &DisplayEntry, content_width: usize) -> usize {
-        match entry {
-            DisplayEntry::UserMessage { text, .. } => {
-                1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
-            }
-            DisplayEntry::AssistantText { text, .. } => {
-                1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
-            }
-            DisplayEntry::ToolCall {
-                name,
-                input,
-                result,
-                ..
-            } => {
-                let count =
-                    self.calculate_tool_call_lines(name, input, result.as_ref(), content_width);
-                count + 1 // blank line
-            }
-            DisplayEntry::ToolResult {
-                content,
-                is_error: _,
-                ..
-            } => {
-                let mut count = 1; // label line
-                if self.expand_tools && !content.is_empty() {
-                    let display_content = if content.len() > 500 {
-                        let truncate_at = content
-                            .char_indices()
-                            .take_while(|(i, _)| *i < 500)
-                            .last()
-                            .map(|(i, c)| i + c.len_utf8())
-                            .unwrap_or(0);
-                        &content[..truncate_at]
-                    } else {
-                        content.as_str()
-                    };
-                    count += wrap_text(display_content, content_width).len();
-                }
-                count + 1 // blank line
-            }
-            DisplayEntry::Thinking { text, .. } => {
-                if self.show_thinking {
-                    1 + wrap_text(text, content_width).len() + 1 // header + wrapped lines + blank
-                } else {
-                    1 // collapsed indicator
-                }
-            }
-            DisplayEntry::HookEvent { command, .. } => {
-                let mut count = 1; // header
-                if self.expand_tools
-                    && let Some(cmd) = command
-                    && cmd != "callback"
-                {
-                    count += 1; // command line
-                }
-                count + 1 // blank line
-            }
-            DisplayEntry::AgentSpawn { description, .. } => {
-                let mut count = 1; // header
-                if !description.is_empty() {
-                    count += 1; // description line
-                }
-                count + 1 // blank line
-            }
-        }
-    }
-
-    /// Calculate how many lines a tool call would generate
-    fn calculate_tool_call_lines(
-        &self,
-        name: &str,
-        input: &str,
-        result: Option<&ToolCallResult>,
-        content_width: usize,
-    ) -> usize {
-        let parsed: Option<serde_json::Value> = serde_json::from_str(input).ok();
-
-        let mut count = match name {
-            "Bash" => self.calculate_bash_tool_lines(parsed.as_ref(), content_width),
-            "Read" => self.calculate_read_tool_lines(parsed.as_ref()),
-            "Write" => self.calculate_write_tool_lines(parsed.as_ref(), content_width),
-            "Edit" => self.calculate_edit_tool_lines(parsed.as_ref()),
-            "Grep" => self.calculate_grep_tool_lines(parsed.as_ref()),
-            "Glob" => self.calculate_glob_tool_lines(parsed.as_ref()),
-            "Task" => self.calculate_task_tool_lines(parsed.as_ref(), content_width),
-            "TodoWrite" => self.calculate_todowrite_tool_lines(parsed.as_ref()),
-            _ => self.calculate_generic_tool_lines(input, content_width),
-        };
-
-        // Add inline result lines if present
-        if let Some(res) = result {
-            count += self.calculate_inline_result_lines(res, content_width);
-        }
-
-        count
-    }
-
-    fn calculate_bash_tool_lines(
-        &self,
-        parsed: Option<&serde_json::Value>,
-        content_width: usize,
-    ) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools
-            && let Some(command) = parsed
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_str())
-            && !command.is_empty()
-        {
-            count += wrap_text(command, content_width.saturating_sub(2)).len();
-        }
-        count
-    }
-
-    fn calculate_read_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools {
-            let offset = parsed
-                .and_then(|v| v.get("offset"))
-                .and_then(|v| v.as_u64());
-            let limit = parsed.and_then(|v| v.get("limit")).and_then(|v| v.as_u64());
-            if offset.is_some() || limit.is_some() {
-                count += 1; // range line
-            }
-        }
-        count
-    }
-
-    fn calculate_write_tool_lines(
-        &self,
-        parsed: Option<&serde_json::Value>,
-        _content_width: usize,
-    ) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools
-            && let Some(content) = parsed
-                .and_then(|v| v.get("content"))
-                .and_then(|v| v.as_str())
-        {
-            let line_count = content.lines().count();
-            if line_count > 0 {
-                count += line_count.min(5); // preview lines (max 5)
-                if line_count > 5 {
-                    count += 1; // "more lines" indicator
-                }
-            }
-        }
-        count
-    }
-
-    fn calculate_edit_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools {
-            if let Some(old_string) = parsed
-                .and_then(|v| v.get("old_string"))
-                .and_then(|v| v.as_str())
-                && !old_string.is_empty()
-            {
-                count += 1; // "- old:" label
-                count += old_string.lines().count().min(3);
-                if old_string.lines().count() > 3 {
-                    count += 1; // "more lines" indicator
-                }
-            }
-            if let Some(new_string) = parsed
-                .and_then(|v| v.get("new_string"))
-                .and_then(|v| v.as_str())
-                && !new_string.is_empty()
-            {
-                count += 1; // "+ new:" label
-                count += new_string.lines().count().min(3);
-                if new_string.lines().count() > 3 {
-                    count += 1; // "more lines" indicator
-                }
-            }
-        }
-        count
-    }
-
-    fn calculate_grep_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools {
-            let has_path = parsed
-                .and_then(|v| v.get("path"))
-                .and_then(|v| v.as_str())
-                .is_some();
-            let has_glob = parsed
-                .and_then(|v| v.get("glob"))
-                .and_then(|v| v.as_str())
-                .is_some();
-            if has_path || has_glob {
-                count += 1; // details line
-            }
-        }
-        count
-    }
-
-    fn calculate_glob_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools
-            && parsed
-                .and_then(|v| v.get("path"))
-                .and_then(|v| v.as_str())
-                .is_some()
-        {
-            count += 1; // path line
-        }
-        count
-    }
-
-    fn calculate_task_tool_lines(
-        &self,
-        parsed: Option<&serde_json::Value>,
-        content_width: usize,
-    ) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools
-            && let Some(prompt) = parsed
-                .and_then(|v| v.get("prompt"))
-                .and_then(|v| v.as_str())
-            && !prompt.is_empty()
-        {
-            let display_prompt = if prompt.len() > 300 {
-                &prompt[..300]
-            } else {
-                prompt
-            };
-            count += wrap_text(display_prompt, content_width.saturating_sub(2)).len();
-        }
-        count
-    }
-
-    fn calculate_todowrite_tool_lines(&self, parsed: Option<&serde_json::Value>) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools
-            && let Some(todos) = parsed
-                .and_then(|v| v.get("todos"))
-                .and_then(|v| v.as_array())
-        {
-            count += todos.len(); // one line per todo item
-        }
-        count
-    }
-
-    fn calculate_generic_tool_lines(&self, input: &str, content_width: usize) -> usize {
-        let mut count = 1; // header
-        if self.expand_tools && !input.is_empty() {
-            count += wrap_text(input, content_width).len();
-        }
-        count
-    }
-
-    fn calculate_inline_result_lines(
-        &self,
-        result: &ToolCallResult,
-        content_width: usize,
-    ) -> usize {
-        if !self.expand_tools {
-            return 1; // collapsed indicator
-        }
-
-        let mut count = 1; // separator line
-        if result.content.is_empty() {
-            count += 1; // empty result label
-        } else {
-            let display_content = if result.content.len() > 500 {
-                let truncate_at = result
-                    .content
-                    .char_indices()
-                    .take_while(|(i, _)| *i < 500)
-                    .last()
-                    .map(|(i, c)| i + c.len_utf8())
-                    .unwrap_or(0);
-                &result.content[..truncate_at]
-            } else {
-                result.content.as_str()
-            };
-            count += wrap_text(display_content, content_width.saturating_sub(2)).len();
-        }
-        count
+        // Delegate to the standalone function — single source of truth
+        calculate_entry_lines(entry, content_width, self.show_thinking, self.expand_tools)
     }
 
     /// Calculate total lines that would be rendered for all entries

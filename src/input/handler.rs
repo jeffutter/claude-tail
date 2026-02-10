@@ -269,6 +269,13 @@ fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
         }
     }
 
+    // Update total_lines after older loading, before checking near-bottom.
+    // Without this, accumulated scroll_delta from older loading can push scroll_offset
+    // past the stale total_lines threshold, falsely triggering newer loading too.
+    app.conversation_state.total_lines =
+        app.buffer
+            .total_rendered_lines(content_width, app.show_thinking, app.expand_tools);
+
     // Near bottom - load newer entries
     let scroll_offset = app.conversation_state.scroll_offset;
     if scroll_offset

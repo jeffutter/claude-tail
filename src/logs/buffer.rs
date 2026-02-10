@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::index::LineIndex;
 use super::parser::{ParseResult, merge_tool_results, parse_jsonl_range};
 use super::types::{DisplayEntry, ToolCallResult};
-use crate::text_utils::wrap_text_line_count;
+use crate::ui::conversation::calculate_entry_lines;
 
 /// Direction of load operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -525,70 +525,6 @@ impl EntryBuffer {
     }
 }
 
-/// Calculate rendered lines for a single entry
-fn calculate_entry_lines(
-    entry: &DisplayEntry,
-    content_width: usize,
-    show_thinking: bool,
-    expand_tools: bool,
-) -> usize {
-    match entry {
-        DisplayEntry::UserMessage { text, .. } => 1 + wrap_text_line_count(text, content_width) + 1,
-        DisplayEntry::AssistantText { text, .. } => {
-            1 + wrap_text_line_count(text, content_width) + 1
-        }
-        DisplayEntry::ToolCall {
-            name,
-            input,
-            result,
-            ..
-        } => {
-            let mut count = 1; // Tool name line
-            if expand_tools {
-                // Estimate based on typical tool rendering
-                count += estimate_tool_lines(name, input, content_width);
-            }
-            if let Some(res) = result {
-                if expand_tools {
-                    count += 1; // separator
-                    count += wrap_text_line_count(&res.content, content_width).min(10);
-                } else {
-                    count += 1; // collapsed result indicator
-                }
-            }
-            count + 1 // blank line
-        }
-        DisplayEntry::ToolResult { content, .. } => {
-            let mut count = 1;
-            if expand_tools && !content.is_empty() {
-                count += wrap_text_line_count(content, content_width).min(10);
-            }
-            count + 1
-        }
-        DisplayEntry::Thinking { text, .. } => {
-            if show_thinking {
-                1 + wrap_text_line_count(text, content_width) + 1
-            } else {
-                1 // collapsed indicator
-            }
-        }
-        DisplayEntry::HookEvent { command, .. } => {
-            let mut count = 1; // header
-            if expand_tools && command.as_ref().is_some_and(|cmd| cmd != "callback") {
-                count += 1; // command line
-            }
-            count + 1 // blank line
-        }
-        DisplayEntry::AgentSpawn { description, .. } => {
-            let mut count = 1; // header
-            if !description.is_empty() {
-                count += 1; // description line
-            }
-            count + 1 // blank line
-        }
-    }
-}
-
 /// Calculate total rendered lines for multiple entries
 fn calculate_entries_lines(
     entries: &[DisplayEntry],
@@ -600,24 +536,6 @@ fn calculate_entries_lines(
         .iter()
         .map(|entry| calculate_entry_lines(entry, content_width, show_thinking, expand_tools))
         .sum()
-}
-
-/// Estimate lines for tool rendering
-fn estimate_tool_lines(name: &str, input: &str, content_width: usize) -> usize {
-    match name {
-        "Bash" | "Read" | "Write" | "Edit" | "Grep" | "Glob" => {
-            // Typical tools show 1-3 lines of info
-            2
-        }
-        "Task" | "TodoWrite" => {
-            // These can be longer
-            3 + wrap_text_line_count(input, content_width).min(5)
-        }
-        _ => {
-            // Generic tool - show full input if short
-            2 + wrap_text_line_count(input, content_width).min(10)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -999,13 +917,10 @@ mod tests {
     }
 
     /// Simulate the EXACT handler behavior for PageUp scrolling through a large file.
-    /// Uses the RENDER's line counting (standalone calculate_entry_lines from conversation.rs)
-    /// for the clamping step, while the buffer uses its own line counting for scroll_delta.
-    /// This catches mismatches between the two.
+    /// Now that buffer and render share the same calculate_entry_lines, scroll_delta
+    /// matches render's line counting exactly.
     #[test]
     fn test_pageup_simulation_reaches_top() {
-        use crate::ui::conversation::calculate_entry_lines as render_calc;
-
         // Test with both short and long text
         for long_text in [false, true] {
             // Build a file with 400 JSONL lines (mix of tool pairs and messages)
@@ -1026,11 +941,12 @@ mod tests {
                 // Reload for each test
                 buffer.load_file(file.path()).unwrap();
 
-                // Use RENDER's line counting for total_lines (this is what the real render does)
                 let render_total = |buf: &EntryBuffer| -> usize {
                     buf.entries()
                         .iter()
-                        .map(|e| render_calc(e, content_width, show_thinking, expand_tools))
+                        .map(|e| {
+                            calculate_entry_lines(e, content_width, show_thinking, expand_tools)
+                        })
                         .sum()
                 };
 
@@ -1107,34 +1023,15 @@ mod tests {
                     if win_start == prev_window_start && scroll_offset == 0 && buffer.has_older() {
                         stall_count += 1;
                         if stall_count > 5 {
-                            // Also check the buffer vs render line count mismatch
-                            let buffer_total: usize = buffer
-                                .entries()
-                                .iter()
-                                .map(|e| {
-                                    calculate_entry_lines(
-                                        e,
-                                        content_width,
-                                        show_thinking,
-                                        expand_tools,
-                                    )
-                                })
-                                .sum();
-                            eprintln!(
-                                "STALLED at press {}: window=({}, {}), has_older={}, \
-                            render_total_lines={}, buffer_total_lines={}, mismatch={}",
-                                press,
+                            panic!(
+                                "Scrolling stalled with expand_tools={}! window=({}, {}), \
+                            has_older={}, total_lines={}, {} JSONL lines unreachable.",
+                                expand_tools,
                                 win_start,
                                 win_end,
                                 buffer.has_older(),
                                 total_lines,
-                                buffer_total,
-                                total_lines as isize - buffer_total as isize
-                            );
-                            panic!(
-                                "Scrolling stalled with expand_tools={}! window_start={}, \
-                            {} JSONL lines unreachable.",
-                                expand_tools, win_start, win_start
+                                win_start
                             );
                         }
                     } else {
