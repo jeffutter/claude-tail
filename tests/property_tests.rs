@@ -514,8 +514,15 @@ fn settle_buffer(
 
         let mut loaded = false;
 
-        // Near top - load older
-        if state.scroll_offset < threshold && buffer.has_older() {
+        // Single-direction per iteration (matches handler's if/else if)
+        let near_top = state.scroll_offset < threshold && buffer.has_older();
+        let near_bottom = state.scroll_offset
+            > state
+                .total_lines
+                .saturating_sub(viewport_height + threshold)
+            && buffer.has_newer();
+
+        if near_top {
             buffer.clear_rate_limit();
             if let Some((path, start, end)) = buffer.request_load_older(40) {
                 let result = parse_jsonl_range(&path, start, end);
@@ -527,14 +534,7 @@ fn settle_buffer(
                 }
                 loaded = true;
             }
-        }
-
-        // Near bottom - load newer
-        let near_bottom = state.scroll_offset
-            > state
-                .total_lines
-                .saturating_sub(viewport_height + threshold);
-        if near_bottom && buffer.has_newer() {
+        } else if near_bottom {
             buffer.clear_rate_limit();
             if let Some((path, start, end)) = buffer.request_load_newer(40) {
                 let result = parse_jsonl_range(&path, start, end);

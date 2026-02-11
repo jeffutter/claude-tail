@@ -226,18 +226,30 @@ fn handle_conversation_input(app: &mut App, key: KeyEvent) -> Action {
 }
 
 /// Check if we're near buffer edges and trigger loads.
-/// When loading is needed, loads multiple batches to fill the buffer toward the edge,
-/// rather than stopping after one batch when scroll_delta pushes offset above threshold.
+/// Loads in only ONE direction per keystroke to prevent oscillation:
+/// loading older prepends entries and inflates scroll_offset, which would
+/// falsely trigger near-bottom loading if we checked both directions.
 fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
     use crate::logs::parse_jsonl_range;
 
     let content_width = app.viewport_width.unwrap_or(80);
     let viewport_height = app.viewport_height.unwrap_or(20);
-    let scroll_offset = app.conversation_state.scroll_offset;
 
-    // Near top - load older entries
-    if scroll_offset < threshold && app.buffer.has_older() {
-        // Load up to 5 batches to fill the buffer toward the beginning
+    let scroll_offset = app.conversation_state.scroll_offset;
+    let total_lines =
+        app.buffer
+            .total_rendered_lines(content_width, app.show_thinking, app.expand_tools);
+
+    let near_top = scroll_offset < threshold && app.buffer.has_older();
+    let near_bottom = {
+        let near_bottom_threshold = total_lines.saturating_sub(viewport_height + threshold);
+        scroll_offset > near_bottom_threshold && app.buffer.has_newer()
+    };
+
+    if near_top {
+        // Load older entries — up to 5 batches, no per-batch threshold re-check.
+        // Each batch prepends entries and returns a positive scroll_delta to
+        // keep the viewport on the same content.
         for _ in 0..5 {
             if !app.buffer.has_older() {
                 break;
@@ -256,35 +268,12 @@ fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
                         (app.conversation_state.scroll_offset as isize + scroll_delta).max(0)
                             as usize;
                 }
-                tracing::debug!(
-                    scroll_delta,
-                    new_offset = app.conversation_state.scroll_offset,
-                    win_start = app.buffer.window_position().0,
-                    win_end = app.buffer.window_position().1,
-                    "Loaded older batch"
-                );
             } else {
                 break;
             }
         }
-    }
-
-    // Update total_lines after older loading, before checking near-bottom.
-    // Without this, accumulated scroll_delta from older loading can push scroll_offset
-    // past the stale total_lines threshold, falsely triggering newer loading too.
-    app.conversation_state.total_lines =
-        app.buffer
-            .total_rendered_lines(content_width, app.show_thinking, app.expand_tools);
-
-    // Near bottom - load newer entries
-    let scroll_offset = app.conversation_state.scroll_offset;
-    if scroll_offset
-        > app
-            .conversation_state
-            .total_lines
-            .saturating_sub(viewport_height + threshold)
-        && app.buffer.has_newer()
-    {
+    } else if near_bottom {
+        // Load newer entries — up to 5 batches, no per-batch threshold re-check.
         for _ in 0..5 {
             if !app.buffer.has_newer() {
                 break;
@@ -309,8 +298,15 @@ fn check_and_trigger_load(app: &mut App, threshold: usize, load_count: usize) {
         }
     }
 
-    // Update total_lines after loading
+    // Update total_lines and clamp scroll_offset after all loading
     app.conversation_state.total_lines =
         app.buffer
             .total_rendered_lines(content_width, app.show_thinking, app.expand_tools);
+    let max_scroll = app
+        .conversation_state
+        .total_lines
+        .saturating_sub(viewport_height);
+    if app.conversation_state.scroll_offset > max_scroll {
+        app.conversation_state.scroll_offset = max_scroll;
+    }
 }

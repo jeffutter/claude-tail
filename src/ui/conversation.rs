@@ -1352,3 +1352,360 @@ impl Default for ConversationState {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logs::ToolCallResult;
+    use std::collections::VecDeque;
+
+    fn make_view<'a>(
+        entries: &'a VecDeque<DisplayEntry>,
+        show_thinking: bool,
+        expand_tools: bool,
+    ) -> ConversationView<'a> {
+        let theme = Box::leak(Box::new(Theme::default()));
+        ConversationView::new(
+            entries,
+            false,
+            theme,
+            show_thinking,
+            expand_tools,
+            false,
+            0,
+            (0, 0),
+        )
+    }
+
+    /// For a single entry, render it and count the actual lines produced,
+    /// then compare against calculate_entry_lines.
+    fn check_entry_line_count(
+        entry: &DisplayEntry,
+        content_width: usize,
+        show_thinking: bool,
+        expand_tools: bool,
+    ) {
+        let entries: VecDeque<DisplayEntry> = vec![entry.clone()].into();
+        let view = make_view(&entries, show_thinking, expand_tools);
+
+        let calculated = calculate_entry_lines(entry, content_width, show_thinking, expand_tools);
+
+        // render_entries takes "padded width" = content_width + 4
+        let render_width = content_width + 4;
+        let (lines, _) = view.render_entries(render_width, 0, calculated + 10);
+
+        assert_eq!(
+            calculated,
+            lines.len(),
+            "Mismatch for {:?} (expand_tools={}, content_width={}): calculate={}, render={}",
+            std::mem::discriminant(entry),
+            expand_tools,
+            content_width,
+            calculated,
+            lines.len(),
+        );
+    }
+
+    fn bash_entry(command: &str, result: Option<(&str, bool)>) -> DisplayEntry {
+        let input = serde_json::json!({"command": command}).to_string();
+        DisplayEntry::ToolCall {
+            name: "Bash".to_string(),
+            input,
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: result.map(|(content, is_error)| ToolCallResult {
+                content: content.to_string(),
+                is_error,
+            }),
+        }
+    }
+
+    fn read_entry(path: &str, offset: Option<u64>, limit: Option<u64>) -> DisplayEntry {
+        let mut input = serde_json::json!({"file_path": path});
+        if let Some(o) = offset {
+            input["offset"] = serde_json::json!(o);
+        }
+        if let Some(l) = limit {
+            input["limit"] = serde_json::json!(l);
+        }
+        DisplayEntry::ToolCall {
+            name: "Read".to_string(),
+            input: input.to_string(),
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: None,
+        }
+    }
+
+    fn write_entry(path: &str, content: &str, result: Option<(&str, bool)>) -> DisplayEntry {
+        let input = serde_json::json!({"file_path": path, "content": content}).to_string();
+        DisplayEntry::ToolCall {
+            name: "Write".to_string(),
+            input,
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: result.map(|(c, e)| ToolCallResult {
+                content: c.to_string(),
+                is_error: e,
+            }),
+        }
+    }
+
+    fn edit_entry(old: &str, new: &str, result: Option<(&str, bool)>) -> DisplayEntry {
+        let input =
+            serde_json::json!({"file_path": "/tmp/test.rs", "old_string": old, "new_string": new})
+                .to_string();
+        DisplayEntry::ToolCall {
+            name: "Edit".to_string(),
+            input,
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: result.map(|(c, e)| ToolCallResult {
+                content: c.to_string(),
+                is_error: e,
+            }),
+        }
+    }
+
+    fn grep_entry(pattern: &str, path: Option<&str>, glob: Option<&str>) -> DisplayEntry {
+        let mut input = serde_json::json!({"pattern": pattern});
+        if let Some(p) = path {
+            input["path"] = serde_json::json!(p);
+        }
+        if let Some(g) = glob {
+            input["glob"] = serde_json::json!(g);
+        }
+        DisplayEntry::ToolCall {
+            name: "Grep".to_string(),
+            input: input.to_string(),
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: None,
+        }
+    }
+
+    fn glob_entry(pattern: &str, path: Option<&str>) -> DisplayEntry {
+        let mut input = serde_json::json!({"pattern": pattern});
+        if let Some(p) = path {
+            input["path"] = serde_json::json!(p);
+        }
+        DisplayEntry::ToolCall {
+            name: "Glob".to_string(),
+            input: input.to_string(),
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: None,
+        }
+    }
+
+    fn task_entry(prompt: &str, result: Option<(&str, bool)>) -> DisplayEntry {
+        let input = serde_json::json!({"description": "test task", "subagent_type": "Bash", "prompt": prompt}).to_string();
+        DisplayEntry::ToolCall {
+            name: "Task".to_string(),
+            input,
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: result.map(|(c, e)| ToolCallResult {
+                content: c.to_string(),
+                is_error: e,
+            }),
+        }
+    }
+
+    fn todowrite_entry(count: usize) -> DisplayEntry {
+        let todos: Vec<serde_json::Value> = (0..count)
+            .map(
+                |i| serde_json::json!({"content": format!("todo item {}", i), "status": "pending"}),
+            )
+            .collect();
+        let input = serde_json::json!({"todos": todos}).to_string();
+        DisplayEntry::ToolCall {
+            name: "TodoWrite".to_string(),
+            input,
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: None,
+        }
+    }
+
+    fn generic_tool_entry(name: &str, input: &str, result: Option<(&str, bool)>) -> DisplayEntry {
+        DisplayEntry::ToolCall {
+            name: name.to_string(),
+            input: input.to_string(),
+            id: "toolu_test".to_string(),
+            timestamp: None,
+            result: result.map(|(c, e)| ToolCallResult {
+                content: c.to_string(),
+                is_error: e,
+            }),
+        }
+    }
+
+    /// Test that calculate_entry_lines matches actual render output for every entry type.
+    #[test]
+    fn test_calculate_matches_render_for_all_entry_types() {
+        let long_text = "a".repeat(500);
+        let very_long_text = "word ".repeat(200); // 1000 chars
+        let multiline_text = "line1\nline2\nline3\nline4\nline5\nline6\nline7";
+
+        let entries: Vec<DisplayEntry> = vec![
+            // UserMessage
+            DisplayEntry::UserMessage {
+                text: "short".to_string(),
+                timestamp: None,
+            },
+            DisplayEntry::UserMessage {
+                text: long_text.clone(),
+                timestamp: None,
+            },
+            // AssistantText
+            DisplayEntry::AssistantText {
+                text: "short reply".to_string(),
+                timestamp: None,
+            },
+            DisplayEntry::AssistantText {
+                text: very_long_text.clone(),
+                timestamp: None,
+            },
+            // Bash
+            bash_entry("ls -la", None),
+            bash_entry("ls -la", Some(("output here", false))),
+            bash_entry("ls -la", Some((&long_text, false))),
+            bash_entry(&very_long_text, Some(("ok", false))),
+            // Read
+            read_entry("/tmp/test.rs", None, None),
+            read_entry("/tmp/test.rs", Some(10), Some(50)),
+            // Write
+            write_entry("/tmp/test.rs", "short", None),
+            write_entry("/tmp/test.rs", multiline_text, Some(("ok", false))),
+            // Edit
+            edit_entry("old code", "new code", None),
+            edit_entry(multiline_text, multiline_text, Some(("ok", false))),
+            // Grep
+            grep_entry("pattern", None, None),
+            grep_entry("pattern", Some("/tmp"), Some("*.rs")),
+            // Glob
+            glob_entry("**/*.rs", None),
+            glob_entry("**/*.rs", Some("/tmp")),
+            // Task
+            task_entry("short prompt", None),
+            task_entry(&very_long_text, Some(("result", false))),
+            // TodoWrite
+            todowrite_entry(0),
+            todowrite_entry(5),
+            // Generic tool
+            generic_tool_entry("CustomTool", r#"{"key": "value"}"#, None),
+            generic_tool_entry("CustomTool", &very_long_text, Some((&long_text, false))),
+            // ToolResult (standalone)
+            DisplayEntry::ToolResult {
+                tool_use_id: "id".to_string(),
+                content: "result".to_string(),
+                is_error: false,
+                timestamp: None,
+            },
+            DisplayEntry::ToolResult {
+                tool_use_id: "id".to_string(),
+                content: long_text.clone(),
+                is_error: true,
+                timestamp: None,
+            },
+            // Thinking
+            DisplayEntry::Thinking {
+                text: "thinking...".to_string(),
+                collapsed: false,
+                timestamp: None,
+            },
+            DisplayEntry::Thinking {
+                text: very_long_text.clone(),
+                collapsed: false,
+                timestamp: None,
+            },
+            // HookEvent
+            DisplayEntry::HookEvent {
+                event: "PreToolUse".to_string(),
+                hook_name: Some("PreToolUse:Read".to_string()),
+                command: Some("my-hook.sh".to_string()),
+                timestamp: None,
+            },
+            DisplayEntry::HookEvent {
+                event: "PostToolUse".to_string(),
+                hook_name: None,
+                command: Some("callback".to_string()),
+                timestamp: None,
+            },
+            // AgentSpawn
+            DisplayEntry::AgentSpawn {
+                agent_type: "Bash".to_string(),
+                description: "test agent".to_string(),
+                timestamp: None,
+            },
+            DisplayEntry::AgentSpawn {
+                agent_type: "Bash".to_string(),
+                description: String::new(),
+                timestamp: None,
+            },
+        ];
+
+        for width in [80, 120, 200] {
+            for expand_tools in [false, true] {
+                for show_thinking in [false, true] {
+                    for entry in &entries {
+                        check_entry_line_count(entry, width, show_thinking, expand_tools);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Test that rendering a full set of entries produces exactly
+    /// calculate_total_lines worth of lines.
+    #[test]
+    fn test_total_rendered_lines_matches_calculate() {
+        let entries: VecDeque<DisplayEntry> = vec![
+            DisplayEntry::UserMessage {
+                text: "hello".to_string(),
+                timestamp: None,
+            },
+            bash_entry("ls -la", Some(("file1\nfile2\nfile3", false))),
+            DisplayEntry::AssistantText {
+                text: "I found those files.".to_string(),
+                timestamp: None,
+            },
+            edit_entry("old\ncode\nhere\nmore", "new\ncode", Some(("ok", false))),
+            DisplayEntry::Thinking {
+                text: "Let me think about this carefully...".to_string(),
+                collapsed: false,
+                timestamp: None,
+            },
+            task_entry(
+                "Search the codebase for all instances of the function",
+                Some(("found 5 matches", false)),
+            ),
+            DisplayEntry::HookEvent {
+                event: "PostToolUse".to_string(),
+                hook_name: Some("PostToolUse:Bash".to_string()),
+                command: Some("validate.sh".to_string()),
+                timestamp: None,
+            },
+        ]
+        .into();
+
+        for width in [80, 120, 200] {
+            for expand_tools in [false, true] {
+                let view = make_view(&entries, true, expand_tools);
+                let render_width = width + 4; // render_entries subtracts 4
+                let calculated = view.calculate_total_lines(render_width);
+                let (lines, _) = view.render_entries(render_width, 0, calculated + 100);
+                assert_eq!(
+                    calculated,
+                    lines.len(),
+                    "Total lines mismatch (expand_tools={}, width={}): calculate={}, render={}",
+                    expand_tools,
+                    width,
+                    calculated,
+                    lines.len(),
+                );
+            }
+        }
+    }
+}

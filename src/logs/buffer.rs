@@ -975,28 +975,27 @@ mod tests {
                     scroll_offset = scroll_offset.saturating_sub(viewport_height);
 
                     // === check_and_trigger_load (matches handler) ===
-                    // Load up to 5 batches when near the top
-                    if scroll_offset < threshold && buffer.has_older() {
-                        for _ in 0..5 {
-                            if !buffer.has_older() {
-                                break;
+                    // Single-direction: check near_top ONCE, load up to 5 batches.
+                    let near_top = scroll_offset < threshold && buffer.has_older();
+                    for _ in 0..5 {
+                        if !near_top || !buffer.has_older() {
+                            break;
+                        }
+                        buffer.clear_rate_limit();
+                        if let Some((path, start, end)) = buffer.request_load_older(40) {
+                            let result = parse_jsonl_range(&path, start, end);
+                            let scroll_delta = buffer.receive_loaded(
+                                result,
+                                content_width,
+                                show_thinking,
+                                expand_tools,
+                            );
+                            if scroll_delta != 0 {
+                                scroll_offset =
+                                    (scroll_offset as isize + scroll_delta).max(0) as usize;
                             }
-                            buffer.clear_rate_limit();
-                            if let Some((path, start, end)) = buffer.request_load_older(40) {
-                                let result = parse_jsonl_range(&path, start, end);
-                                let scroll_delta = buffer.receive_loaded(
-                                    result,
-                                    content_width,
-                                    show_thinking,
-                                    expand_tools,
-                                );
-                                if scroll_delta != 0 {
-                                    scroll_offset =
-                                        (scroll_offset as isize + scroll_delta).max(0) as usize;
-                                }
-                            } else {
-                                break;
-                            }
+                        } else {
+                            break;
                         }
                     }
 
