@@ -23,7 +23,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
 [dev-dependencies]
+divan = "0.1"
 tempfile = "3"
+
+[[bench]]
+name = "parser"
+harness = false
 
 [profile.release]
 lto = true
