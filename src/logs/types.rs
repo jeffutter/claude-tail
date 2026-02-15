@@ -2,17 +2,34 @@ use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogEntry {
-    #[serde(rename = "type")]
-    pub entry_type: String,
-    #[serde(default)]
-    pub message: Option<MessageContent>,
-    #[serde(default)]
-    pub data: Option<serde_json::Value>,
-    #[serde(default)]
-    pub timestamp: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub session_id: Option<String>,
+#[serde(tag = "type")]
+pub enum LogEntry {
+    #[serde(rename = "user")]
+    User {
+        message: MessageContent,
+        #[serde(default)]
+        timestamp: Option<DateTime<Utc>>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    #[serde(rename = "assistant")]
+    Assistant {
+        message: MessageContent,
+        #[serde(default)]
+        timestamp: Option<DateTime<Utc>>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    #[serde(rename = "progress")]
+    Progress {
+        data: serde_json::Value,
+        #[serde(default)]
+        timestamp: Option<DateTime<Utc>>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,14 +42,14 @@ pub struct MessageContent {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContentValue {
     Text(String),
     Blocks(Vec<ContentBlock>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
@@ -61,14 +78,14 @@ pub enum ContentBlock {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolResultContent {
     Text(String),
     Blocks(Vec<ToolResultBlock>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResultBlock {
     #[serde(rename = "type")]
     pub block_type: String,

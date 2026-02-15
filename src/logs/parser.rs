@@ -130,29 +130,18 @@ pub async fn parse_jsonl_from_position_async(path: PathBuf, position: u64) -> Re
 }
 
 fn convert_log_entry(entry: &LogEntry) -> Vec<DisplayEntry> {
-    let mut display_entries = Vec::new();
-    let timestamp = entry.timestamp;
-
-    match entry.entry_type.as_str() {
-        "user" => {
-            if let Some(ref message) = entry.message {
-                display_entries.extend(parse_user_message(message, timestamp));
-            }
-        }
-        "progress" => {
-            if let Some(ref data) = entry.data {
-                display_entries.extend(parse_progress_data(data, timestamp));
-            }
-        }
-        "assistant" => {
-            if let Some(ref message) = entry.message {
-                display_entries.extend(parse_assistant_message(message, timestamp));
-            }
-        }
-        _ => {}
+    match entry {
+        LogEntry::User {
+            message, timestamp, ..
+        } => parse_user_message(message, *timestamp),
+        LogEntry::Assistant {
+            message, timestamp, ..
+        } => parse_assistant_message(message, *timestamp),
+        LogEntry::Progress {
+            data, timestamp, ..
+        } => parse_progress_data(data, *timestamp),
+        LogEntry::Unknown => Vec::new(),
     }
-
-    display_entries
 }
 
 fn parse_user_message(
