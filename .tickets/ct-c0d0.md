@@ -1,6 +1,6 @@
 ---
 id: ct-c0d0
-status: open
+status: closed
 deps: [ct-kkil, ct-5vmd]
 links: []
 created: 2026-02-14T23:38:12Z
@@ -220,3 +220,7 @@ fn test_crlf_line_endings() {
 ## Notes
 Source commits: d510a39 (initial tests) + fixes in 7842d26 (CRLF test correction) on ai-slop-refactor. Depends on ct-kkil (tagged enum) and ct-5vmd (StreamDeserializer, for correct CRLF behavior).
 
+
+**2026-02-15T07:20:25Z**
+
+Implemented 33 tests (plan called for 29): 6 byte-position, 5 resume, 5 partial-EOF, 7 error-recovery, 5 edge-cases, 3 bonus merge_tool_results tests. Renamed misplaced progress-entry test, added intervening-entry merge test, and strengthened byte-offset assertion per review feedback. All 65 unit tests pass, clippy clean.
