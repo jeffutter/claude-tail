@@ -35,6 +35,7 @@
           buildInputs = with pkgs; [
             vhs
             rustToolchain
+            cargo-nextest
             pkg-config
             lefthook
           ];

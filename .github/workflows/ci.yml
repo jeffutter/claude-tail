@@ -16,8 +16,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Run tests
-        run: cargo test --all-features --workspace
+        run: cargo nextest run --all-features --profile ci
 
   rustfmt:
     name: Rustfmt

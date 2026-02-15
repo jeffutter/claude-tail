@@ -17,6 +17,6 @@ pre-commit:
       glob: "**/*.rs"
       run: cargo clippy --allow-dirty --fix --all-targets --workspace -- -D warnings
       stage_fixed: true
-    - name: Test 
+    - name: Test
       glob: "**/*.rs"
-      run: cargo test 
+      run: cargo nextest run --lib

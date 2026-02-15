@@ -1,0 +1,7 @@
+[profile.default]
+fail-fast = true
+slow-timeout = { period = "60s" }
+
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "30s" }
