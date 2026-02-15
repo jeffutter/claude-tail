@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde_json::error::Category;
 use std::io::{Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -19,99 +20,79 @@ pub fn parse_jsonl_file(path: &Path) -> Result<ParseResult> {
     let mut file = std::fs::File::open(path)?;
     let mut content = String::new();
     file.read_to_string(&mut content)?;
-
-    let mut entries = Vec::new();
-    let mut errors = Vec::new();
-
-    // Track position of last successfully parsed line ending
-    let mut bytes_consumed = 0usize;
-
-    for (line_num, line) in content.lines().enumerate() {
-        // Calculate where this line ends (including the newline if present)
-        let line_end = bytes_consumed + line.len();
-        let with_newline = if content.as_bytes().get(line_end) == Some(&b'\n') {
-            line_end + 1
-        } else {
-            line_end
-        };
-
-        if line.trim().is_empty() {
-            bytes_consumed = with_newline;
-            continue;
-        }
-
-        match serde_json::from_str::<LogEntry>(line) {
-            Ok(entry) => {
-                entries.extend(convert_log_entry(&entry));
-                bytes_consumed = with_newline;
-            }
-            Err(e) => {
-                // Only count as consumed if the line is complete (has newline or is at EOF)
-                // An incomplete line at EOF might just be partially written
-                if with_newline <= content.len() {
-                    errors.push(format!("Line {}: {}", line_num + 1, e));
-                    bytes_consumed = with_newline;
-                }
-                // If it's an incomplete line at EOF, don't advance bytes_consumed
-                // so we'll re-read it next time when it's complete
-            }
-        }
-    }
-
-    Ok(ParseResult {
-        entries,
-        errors,
-        bytes_read: bytes_consumed as u64,
-    })
+    parse_stream_content(&content, 0)
 }
 
 pub fn parse_jsonl_from_position(path: &Path, position: u64) -> Result<ParseResult> {
     let mut file = std::fs::File::open(path)?;
     file.seek(SeekFrom::Start(position))?;
-
     let mut content = String::new();
     file.read_to_string(&mut content)?;
+    parse_stream_content(&content, position)
+}
 
+fn parse_stream_content(content: &str, base_position: u64) -> Result<ParseResult> {
     let mut entries = Vec::new();
     let mut errors = Vec::new();
+    let mut last_valid_position = 0;
+    let mut current_pos = 0;
 
-    // Track position of last successfully parsed line ending
-    let mut bytes_consumed = 0usize;
+    while current_pos < content.len() {
+        let slice = &content[current_pos..];
+        let deserializer = serde_json::Deserializer::from_str(slice);
+        let mut stream = deserializer.into_iter::<LogEntry>();
 
-    for (line_num, line) in content.lines().enumerate() {
-        // Calculate where this line ends (including the newline if present)
-        let line_end = bytes_consumed + line.len();
-        let with_newline = if content.as_bytes().get(line_end) == Some(&b'\n') {
-            line_end + 1
-        } else {
-            line_end
-        };
-
-        if line.trim().is_empty() {
-            bytes_consumed = with_newline;
-            continue;
-        }
-
-        match serde_json::from_str::<LogEntry>(line) {
-            Ok(entry) => {
+        match stream.next() {
+            Some(Ok(entry)) => {
                 entries.extend(convert_log_entry(&entry));
-                bytes_consumed = with_newline;
+                let offset = stream.byte_offset();
+                current_pos += offset;
+
+                // Skip trailing whitespace (including CRLF)
+                let whitespace_len = content[current_pos..]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>();
+                current_pos += whitespace_len;
+                last_valid_position = current_pos;
             }
-            Err(e) => {
-                // Only count as consumed if the line is complete (has newline or is at EOF)
-                if with_newline <= content.len() {
-                    errors.push(format!("Incremental line {}: {}", line_num + 1, e));
-                    bytes_consumed = with_newline;
+            Some(Err(e)) => {
+                let error_offset = current_pos + stream.byte_offset();
+                match e.classify() {
+                    Category::Eof => break,
+                    Category::Syntax | Category::Data => {
+                        errors.push(format!(
+                            "Parse error at byte {}: {}",
+                            base_position + error_offset as u64,
+                            e
+                        ));
+                        // Recover: skip to next newline
+                        if let Some(remaining) = slice.get(stream.byte_offset()..) {
+                            if let Some(newline_pos) = remaining.find('\n') {
+                                current_pos = current_pos + stream.byte_offset() + newline_pos + 1;
+                                last_valid_position = current_pos;
+                            } else {
+                                last_valid_position = content.len();
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Category::Io => {
+                        return Err(anyhow::anyhow!("I/O error during deserialization: {}", e));
+                    }
                 }
-                // Incomplete line at EOF - don't advance, we'll re-read when complete
             }
+            None => break,
         }
     }
 
     Ok(ParseResult {
         entries,
         errors,
-        bytes_read: position + bytes_consumed as u64,
+        bytes_read: base_position + last_valid_position as u64,
     })
 }
 
