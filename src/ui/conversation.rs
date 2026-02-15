@@ -1148,7 +1148,7 @@ impl<'a> StatefulWidget for ConversationView<'a> {
                 .end_symbol(Some("↓"));
 
             let mut scrollbar_state = ScrollbarState::default()
-                .content_length(total_lines)
+                .content_length(max_scroll + 1)
                 .position(state.scroll_offset)
                 .viewport_content_length(inner.height as usize);
 
