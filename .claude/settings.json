@@ -1,17 +1,20 @@
 {
   "permissions": {
     "allow": [
+      "Bash(cargo bench:*)",
       "Bash(cargo build:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo fmt:*)",
+      "Bash(cargo nextest:*)",
+      "Bash(cargo test:*)",
       "Bash(find:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git diff:*)",
       "Bash(git stash:*)",
       "Bash(git status:*)",
-      "Bash(tk:*)",
-      "Bash(lefthook:*)"
+      "Bash(lefthook:*)",
+      "Bash(tk:*)"
     ]
   },
   "hooks": {
@@ -28,4 +31,3 @@
     ]
   }
 }
-
