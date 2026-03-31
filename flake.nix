@@ -41,7 +41,7 @@
           ];
         };
 
-        packages.default = pkgs.rustPlatform.buildRustPackage {
+        packages.default = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
           pname = "claude-tail";
           version = "0.1.0";
           src = ./.;
