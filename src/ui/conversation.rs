@@ -59,7 +59,9 @@ impl<'a> ConversationView<'a> {
             "Edit" => self.render_edit_tool(lines, parsed.as_ref(), content_width),
             "Grep" => self.render_grep_tool(lines, parsed.as_ref(), content_width),
             "Glob" => self.render_glob_tool(lines, parsed.as_ref(), content_width),
-            "Task" => self.render_task_tool(lines, parsed.as_ref(), content_width),
+            "Task" => self.render_agent_like_tool(lines, "Task", parsed.as_ref(), content_width),
+            "Agent" => self.render_agent_like_tool(lines, "Agent", parsed.as_ref(), content_width),
+            "Skill" => self.render_skill_tool(lines, parsed.as_ref(), content_width),
             "TodoWrite" => self.render_todowrite_tool(lines, parsed.as_ref(), content_width),
             _ => self.render_generic_tool(lines, name, input, content_width),
         }
@@ -406,9 +408,10 @@ impl<'a> ConversationView<'a> {
         }
     }
 
-    fn render_task_tool(
+    fn render_agent_like_tool(
         &self,
         lines: &mut Vec<Line<'a>>,
+        label: &str,
         parsed: Option<&serde_json::Value>,
         content_width: usize,
     ) {
@@ -428,9 +431,9 @@ impl<'a> ConversationView<'a> {
             .unwrap_or("")
             .to_string();
 
-        // Header: Task (subagent_type): description
+        // Header: {label} (subagent_type): description
         lines.push(Line::from(vec![
-            Span::styled("Task ", self.theme.agent_spawn),
+            Span::styled(format!("{} ", label), self.theme.agent_spawn),
             Span::styled(
                 format!("({})", subagent_type),
                 self.theme.thinking_collapsed,
@@ -457,6 +460,39 @@ impl<'a> ConversationView<'a> {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", line),
                     self.theme.thinking,
+                )));
+            }
+        }
+    }
+
+    fn render_skill_tool(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) {
+        let skill = parsed
+            .and_then(|v| v.get("skill"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let args = parsed
+            .and_then(|v| v.get("args"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Header: Skill: /{skill}
+        lines.push(Line::from(vec![
+            Span::styled("Skill: ", self.theme.tool_name),
+            Span::styled(format!("/{}", skill), self.theme.tool_input),
+        ]));
+
+        if self.expand_tools && !args.is_empty() {
+            for line in wrap_text(&args, content_width.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    self.theme.thinking_collapsed,
                 )));
             }
         }
@@ -647,7 +683,8 @@ impl<'a> ConversationView<'a> {
             "Edit" => self.calculate_edit_tool_lines(parsed.as_ref()),
             "Grep" => self.calculate_grep_tool_lines(parsed.as_ref()),
             "Glob" => self.calculate_glob_tool_lines(parsed.as_ref()),
-            "Task" => self.calculate_task_tool_lines(parsed.as_ref(), content_width),
+            "Task" | "Agent" => self.calculate_task_tool_lines(parsed.as_ref(), content_width),
+            "Skill" => self.calculate_skill_tool_lines(parsed.as_ref(), content_width),
             "TodoWrite" => self.calculate_todowrite_tool_lines(parsed.as_ref()),
             _ => self.calculate_generic_tool_lines(input, content_width),
         };
@@ -791,6 +828,21 @@ impl<'a> ConversationView<'a> {
                 prompt
             };
             count += wrap_text(display_prompt, content_width.saturating_sub(2)).len();
+        }
+        count
+    }
+
+    fn calculate_skill_tool_lines(
+        &self,
+        parsed: Option<&serde_json::Value>,
+        content_width: usize,
+    ) -> usize {
+        let mut count = 1; // header
+        if self.expand_tools
+            && let Some(args) = parsed.and_then(|v| v.get("args")).and_then(|v| v.as_str())
+            && !args.is_empty()
+        {
+            count += wrap_text(args, content_width.saturating_sub(2)).len();
         }
         count
     }
