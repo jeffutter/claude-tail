@@ -8,7 +8,7 @@ use ratatui::{
     },
 };
 use std::collections::VecDeque;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::styles::Theme;
 use crate::logs::{DisplayEntry, ToolCallResult};
@@ -1218,13 +1218,29 @@ impl<'a> StatefulWidget for ConversationView<'a> {
 
 /// Truncates a line to fit within a given width, adding ellipsis if needed
 fn truncate_line(line: &str, max_width: usize) -> String {
-    if line.len() <= max_width {
-        line.to_string()
-    } else if max_width > 1 {
-        format!("{}…", &line[..max_width - 1])
-    } else {
-        "…".to_string()
+    // Compare and truncate by display width (and on char boundaries) so that
+    // multi-byte UTF-8 and wide characters don't cause byte-slice panics.
+    if line.width() <= max_width {
+        return line.to_string();
     }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    // Reserve one column for the ellipsis.
+    let budget = max_width - 1;
+    let mut width = 0;
+    let mut truncated = String::new();
+    for c in line.chars() {
+        let cw = c.width().unwrap_or(0);
+        if width + cw > budget {
+            break;
+        }
+        width += cw;
+        truncated.push(c);
+    }
+    truncated.push('…');
+    truncated
 }
 
 /// Abbreviates a file path for display (e.g., ~/s/c/project/src/main.rs)
